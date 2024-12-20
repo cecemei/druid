@@ -23,7 +23,9 @@ import com.fasterxml.jackson.annotation.JacksonInject;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.annotation.JsonTypeName;
+import io.vavr.Function3;
 import org.apache.druid.java.util.common.IAE;
+import org.apache.druid.query.policy.Policy;
 import org.apache.druid.security.basic.BasicAuthDBConfig;
 import org.apache.druid.security.basic.authorization.db.cache.BasicAuthorizerCacheManager;
 import org.apache.druid.security.basic.authorization.entity.BasicAuthorizerPermission;
@@ -33,10 +35,12 @@ import org.apache.druid.server.security.Action;
 import org.apache.druid.server.security.AuthenticationResult;
 import org.apache.druid.server.security.Authorizer;
 import org.apache.druid.server.security.Resource;
+import org.apache.druid.server.security.ResourceType;
 
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -47,6 +51,7 @@ public class BasicRoleBasedAuthorizer implements Authorizer
   private final String name;
   private final BasicAuthDBConfig dbConfig;
   private final RoleProvider roleProvider;
+  private final Function3<String, AuthenticationResult, Set<String>, Optional<Policy>> rowPolicyProvider;
 
   @JsonCreator
   public BasicRoleBasedAuthorizer(
@@ -76,6 +81,7 @@ public class BasicRoleBasedAuthorizer implements Authorizer
     } else {
       this.roleProvider = roleProvider;
     }
+    this.rowPolicyProvider = cacheManager::getRowPolicyMap;
   }
 
   @Override
@@ -96,18 +102,27 @@ public class BasicRoleBasedAuthorizer implements Authorizer
       throw new IAE("Could not load roleMap for authorizer [%s]", name);
     }
 
+    boolean hasPermission = false;
     for (String roleName : roleNames) {
       BasicAuthorizerRole role = roleMap.get(roleName);
       if (role != null) {
         for (BasicAuthorizerPermission permission : role.getPermissions()) {
           if (permissionCheck(resource, action, permission)) {
-            return new Access(true);
+            hasPermission = true;
+            break;
           }
         }
       }
     }
 
-    return new Access(false);
+    if (!hasPermission) {
+      return Access.DENIED;
+    }
+    if (resource.getType().equals(ResourceType.DATASOURCE) && action.equals(Action.READ)) {
+      Optional<Policy> policy = rowPolicyProvider.apply(resource.getName(), authenticationResult, roleNames);
+      return policy.map(Access::allowWithRestriction).orElse(Access.OK);
+    }
+    return Access.OK;
   }
 
   private boolean permissionCheck(Resource resource, Action action, BasicAuthorizerPermission permission)

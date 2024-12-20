@@ -591,6 +591,7 @@ ORDER BY
           <RefreshButton
             localStorageKey={LocalStorageKeys.TASKS_REFRESH_RATE}
             onRefresh={auto => {
+              if (1 > 0) return; // skip refresh
               if (auto && hasOverlayOpen()) return;
               this.taskQueryManager.rerunLastQuery(auto);
             }}
