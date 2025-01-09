@@ -22,7 +22,9 @@ package org.apache.druid.security.basic.authorization.db.cache;
 import com.google.common.collect.ImmutableSet;
 import org.apache.druid.query.filter.EqualityFilter;
 import org.apache.druid.query.filter.FalseDimFilter;
+import org.apache.druid.query.policy.NoRestrictionPolicy;
 import org.apache.druid.query.policy.Policy;
+import org.apache.druid.query.policy.RowFilterPolicy;
 import org.apache.druid.security.basic.BasicAuthUtils;
 import org.apache.druid.security.basic.authorization.entity.BasicAuthorizerGroupMapping;
 import org.apache.druid.security.basic.authorization.entity.BasicAuthorizerRole;
@@ -98,21 +100,21 @@ public interface BasicAuthorizerCacheManager
     }
 
     if (DEFAULT_ALL_ACCESS_USERS.contains(authenticationResult.getIdentity())) {
-      return Optional.of(Policy.NO_RESTRICTION);
+      return Optional.of(NoRestrictionPolicy.INSTANCE);
     }
     String userName = authenticationResult.getIdentity();
     // for user "user1-org1", the org is org1; for user "user2", the org is user2.
     Matcher orgMatcher = ORGANIZATION_ID_MATCHER.matcher(userName);
     String fakeOrganization = orgMatcher.matches() ? orgMatcher.group(1) : userName;
     if (roleNames.contains("org-admin")) {
-      return Optional.of(Policy.fromRowFilter(new EqualityFilter(
+      return Optional.of(RowFilterPolicy.from(new EqualityFilter(
           tenantColumnMatcher.group(1),
           ColumnType.STRING,
           fakeOrganization,
           null
       )));
     }
-    return Optional.of(Policy.fromRowFilter(FalseDimFilter.instance()));
+    return Optional.of(RowFilterPolicy.from(FalseDimFilter.instance()));
   }
 
   /**
