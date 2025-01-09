@@ -19,42 +19,42 @@
 
 package org.apache.druid.segment;
 
+import org.apache.druid.query.filter.DimFilter;
 import org.apache.druid.query.policy.Policy;
-import org.apache.druid.segment.column.ColumnCapabilities;
-import org.apache.druid.segment.column.RowSignature;
 
-import javax.annotation.Nullable;
-
-public class RestrictedCursorFactory implements CursorFactory
+/**
+ * A wrapped {@link SegmentReference} with a {@link DimFilter} restriction, and the policy restriction can be bypassed.
+ * <p>
+ * In some methods, such as {@link #as(Class)}, {@link #asQueryableIndex()}, and {@link #asCursorFactory()}, the policy
+ * is ignored.
+ */
+class BypassRestrictedSegment extends RestrictedSegment
 {
-  private final CursorFactory delegate;
-  private final Policy policy;
-
-  public RestrictedCursorFactory(
-      CursorFactory delegate,
-      Policy policy
-  )
+  public BypassRestrictedSegment(SegmentReference delegate, Policy policy)
   {
-    this.delegate = delegate;
-    this.policy = policy;
+    super(delegate, policy);
+  }
+
+  public Policy getPolicy()
+  {
+    return policy;
   }
 
   @Override
-  public CursorHolder makeCursorHolder(CursorBuildSpec spec)
+  public CursorFactory asCursorFactory()
   {
-    return delegate.makeCursorHolder(policy.visit(spec));
+    return delegate.asCursorFactory();
   }
 
   @Override
-  public RowSignature getRowSignature()
+  public QueryableIndex asQueryableIndex()
   {
-    return delegate.getRowSignature();
+    return delegate.asQueryableIndex();
   }
 
-  @Nullable
   @Override
-  public ColumnCapabilities getColumnCapabilities(String column)
+  public <T> T as(Class<T> clazz)
   {
-    return delegate.getColumnCapabilities(column);
+    return delegate.as(clazz);
   }
 }

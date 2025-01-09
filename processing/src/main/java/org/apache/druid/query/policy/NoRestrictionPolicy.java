@@ -17,44 +17,51 @@
  * under the License.
  */
 
-package org.apache.druid.segment;
+package org.apache.druid.query.policy;
 
-import org.apache.druid.query.policy.Policy;
-import org.apache.druid.segment.column.ColumnCapabilities;
-import org.apache.druid.segment.column.RowSignature;
+import com.fasterxml.jackson.annotation.JsonCreator;
+import org.apache.druid.segment.CursorBuildSpec;
 
-import javax.annotation.Nullable;
-
-public class RestrictedCursorFactory implements CursorFactory
+/**
+ * Represents a special kind of policy restriction, indicating that this table is restricted, but doesn't impose any restriction
+ * to a user.
+ */
+public class NoRestrictionPolicy implements Policy
 {
-  private final CursorFactory delegate;
-  private final Policy policy;
+  public static final NoRestrictionPolicy INSTANCE = new NoRestrictionPolicy();
 
-  public RestrictedCursorFactory(
-      CursorFactory delegate,
-      Policy policy
-  )
+  @JsonCreator
+  NoRestrictionPolicy()
   {
-    this.delegate = delegate;
-    this.policy = policy;
   }
 
   @Override
-  public CursorHolder makeCursorHolder(CursorBuildSpec spec)
+  public CursorBuildSpec visit(CursorBuildSpec spec)
   {
-    return delegate.makeCursorHolder(policy.visit(spec));
+    return spec;
   }
 
   @Override
-  public RowSignature getRowSignature()
+  public String toString()
   {
-    return delegate.getRowSignature();
+    return "NO_RESTRICTION";
   }
 
-  @Nullable
   @Override
-  public ColumnCapabilities getColumnCapabilities(String column)
+  public boolean equals(Object o)
   {
-    return delegate.getColumnCapabilities(column);
+    if (this == o) {
+      return true;
+    }
+    if (o == null || getClass() != o.getClass()) {
+      return false;
+    }
+    return true;
+  }
+
+  @Override
+  public int hashCode()
+  {
+    return 0;
   }
 }

@@ -175,8 +175,7 @@ public class DartSqlResource extends SqlResource
     queries.sort(Comparator.comparing(DartQueryInfo::getStartTime).thenComparing(DartQueryInfo::getDartQueryId));
 
     final GetQueriesResponse response;
-    boolean hasFullPermission = !stateReadAccess.getPermissionErrorMessage(true).isPresent();
-    if (hasFullPermission) {
+    if (stateReadAccess.isUserWithNoRestriction()) {
       // User can READ STATE, so they can see all running queries, as well as authentication details.
       response = new GetQueriesResponse(queries);
     } else {
@@ -248,7 +247,7 @@ public class DartSqlResource extends SqlResource
 
     final AuthorizationResult authResult = authorizeCancellation(req, cancelables);
 
-    if (!authResult.getPermissionErrorMessage(true).isPresent()) {
+    if (authResult.isUserWithNoRestriction()) {
       sqlLifecycleManager.removeAll(sqlQueryId, cancelables);
 
       // Don't call cancel() on the cancelables. That just cancels native queries, which is useless here. Instead,

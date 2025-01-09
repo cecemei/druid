@@ -316,7 +316,7 @@ public class QueryLifecycle
     Preconditions.checkNotNull(authenticationResult, "authenticationResult");
     Preconditions.checkNotNull(authorizationResult, "authorizationResult");
 
-    if (authorizationResult.getPermissionErrorMessage(false).isPresent()) {
+    if (!authorizationResult.allowBasicAccess()) {
       // Not authorized; go straight to Jail, do not pass Go.
       transition(State.AUTHORIZING, State.UNAUTHORIZED);
     } else {
@@ -324,10 +324,8 @@ public class QueryLifecycle
       if (this.baseQuery instanceof SegmentMetadataQuery && authorizationResult.isUserWithNoRestriction()) {
         // skip restrictions mapping for SegmentMetadataQuery from user with no restriction
       } else {
-        this.baseQuery = this.baseQuery.withPolicyRestrictions(
-            authorizationResult.getPolicy(),
-            authConfig.getTablePolicySecurityLevel()
-        );
+        this.baseQuery = this.baseQuery.withDataSource(this.baseQuery.getDataSource()
+                                                                     .mapWithRestriction(authorizationResult.getPolicy()));
       }
     }
 

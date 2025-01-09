@@ -19,8 +19,10 @@
 
 package org.apache.druid.server.security;
 
-import com.google.common.collect.ImmutableMap;
+import com.google.common.base.Preconditions;
+import com.google.common.base.Strings;
 import org.apache.druid.error.DruidException;
+import org.apache.druid.query.policy.NoRestrictionPolicy;
 import org.apache.druid.query.policy.Policy;
 
 import javax.annotation.Nonnull;
@@ -29,8 +31,6 @@ import java.util.Collections;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
-import java.util.Set;
-import java.util.stream.Stream;
 
 /**
  * Represents the outcoming of performing authorization check on required resource accesses on a query or http requests.
@@ -51,9 +51,7 @@ public class AuthorizationResult
   public static final AuthorizationResult ALLOW_NO_RESTRICTION = new AuthorizationResult(
       PERMISSION.ALLOW_NO_RESTRICTION,
       null,
-      Collections.emptyMap(),
-      null,
-      null
+      Collections.emptyMap()
   );
 
   /**
@@ -62,9 +60,7 @@ public class AuthorizationResult
   public static final AuthorizationResult DENY = new AuthorizationResult(
       PERMISSION.DENY,
       Access.DENIED.getMessage(),
-      Collections.emptyMap(),
-      null,
-      null
+      Collections.emptyMap()
   );
 
   enum PERMISSION
@@ -81,43 +77,38 @@ public class AuthorizationResult
 
   private final Map<String, Optional<Policy>> policyRestrictions;
 
-  @Nullable
-  private final Set<ResourceAction> sqlResourceActions;
-
-  @Nullable
-  private final Set<ResourceAction> allResourceActions;
-
   AuthorizationResult(
       PERMISSION permission,
       @Nullable String failureMessage,
-      Map<String, Optional<Policy>> policyRestrictions,
-      @Nullable Set<ResourceAction> sqlResourceActions,
-      @Nullable Set<ResourceAction> allResourceActions
+      Map<String, Optional<Policy>> policyRestrictions
   )
   {
     this.permission = permission;
     this.failureMessage = failureMessage;
     this.policyRestrictions = policyRestrictions;
-    this.sqlResourceActions = sqlResourceActions;
-    this.allResourceActions = allResourceActions;
 
     // sanity check
-    if (failureMessage != null && !PERMISSION.DENY.equals(permission)) {
-      throw DruidException.defensive("Failure message should only be set for DENY permission");
-    } else if (PERMISSION.DENY.equals(permission) && failureMessage == null) {
-      throw DruidException.defensive("Failure message must be set for DENY permission");
-    }
-
-    if (!policyRestrictions.isEmpty() && !PERMISSION.ALLOW_WITH_RESTRICTION.equals(permission)) {
-      throw DruidException.defensive("Policy restrictions should only be set for ALLOW_WITH_RESTRICTION permission");
-    } else if (PERMISSION.ALLOW_WITH_RESTRICTION.equals(permission) && policyRestrictions.isEmpty()) {
-      throw DruidException.defensive("Policy restrictions must be set for ALLOW_WITH_RESTRICTION permission");
+    switch (permission) {
+      case DENY:
+        validateFailureMessageIsSet();
+        validatePolicyRestrictionEmpty();
+        return;
+      case ALLOW_WITH_RESTRICTION:
+        validateFailureMessageNull();
+        validatePolicyRestrictionNonEmpty();
+        return;
+      case ALLOW_NO_RESTRICTION:
+        validateFailureMessageNull();
+        validatePolicyRestrictionEmpty();
+        return;
+      default:
+        throw DruidException.defensive("unreachable");
     }
   }
 
   public static AuthorizationResult deny(@Nonnull String failureMessage)
   {
-    return new AuthorizationResult(PERMISSION.DENY, failureMessage, Collections.emptyMap(), null, null);
+    return new AuthorizationResult(PERMISSION.DENY, failureMessage, Collections.emptyMap());
   }
 
   public static AuthorizationResult allowWithRestriction(Map<String, Optional<Policy>> policyRestrictions)
@@ -125,63 +116,44 @@ public class AuthorizationResult
     if (policyRestrictions.isEmpty()) {
       return ALLOW_NO_RESTRICTION;
     }
-    return new AuthorizationResult(PERMISSION.ALLOW_WITH_RESTRICTION, null, policyRestrictions, null, null);
-  }
-
-  public AuthorizationResult withResourceActions(
-      Set<ResourceAction> sqlResourceActions,
-      Set<ResourceAction> allResourceActions
-  )
-  {
-    return new AuthorizationResult(
-        permission,
-        failureMessage,
-        ImmutableMap.copyOf(getPolicy()),
-        sqlResourceActions,
-        allResourceActions
-    );
-  }
-
-  public boolean isUserWithNoRestriction()
-  {
-    return policyRestrictions.values()
-                             .stream()
-                             .flatMap(policy -> policy.isPresent()
-                                                ? Stream.of(policy.get())
-                                                : Stream.empty()) // Can be replaced by Optional.stream after Java 11
-                             .allMatch(Policy::hasNoRestriction);
+    return new AuthorizationResult(PERMISSION.ALLOW_WITH_RESTRICTION, null, policyRestrictions);
   }
 
   /**
-   * Returns a permission error string if the AuthorizationResult doesn't permit all requried access. Otherwise, returns
-   * empty. When {@code policyRestrictionsNotPermitted} set to true, it requests unrestricted full access. The caller
-   * can use this method to retrieve the error string, and throw a {@link ForbiddenException} with the error message.
-   * <p>
-   * It first checks if all permissions (e.x. {@link org.apache.druid.security.basic.authorization.entity.BasicAuthorizerPermission})
-   * have been granted access. If not, returns the {@code failureMessage}. Then if {@code policyRestrictionsNotPermitted},
-   * it checks for 'actual' policy restrictions (i.e. {@link Policy#hasNoRestriction} returns false). If 'actual' policy
-   * restrictions exist, returns {@link Access#DEFAULT_ERROR_MESSAGE}.
-   *
-   * @param policyRestrictionsNotPermitted true if policy restrictions are considered as not permitted
-   * @return optional permission error message
+   * Returns true if user has basic access.
    */
-  public Optional<String> getPermissionErrorMessage(boolean policyRestrictionsNotPermitted)
+  public boolean allowBasicAccess()
+  {
+    return PERMISSION.ALLOW_NO_RESTRICTION.equals(permission) || PERMISSION.ALLOW_WITH_RESTRICTION.equals(permission);
+  }
+
+  /**
+   * Returns true if user has all required permission, and the policy restrictions indicates one of the following:
+   * <li> no policy found
+   * <li> the user has a no-restriction policy
+   */
+  public boolean isUserWithNoRestriction()
+  {
+    return PERMISSION.ALLOW_NO_RESTRICTION.equals(permission) || (PERMISSION.ALLOW_WITH_RESTRICTION.equals(permission)
+                                                                  && policyRestrictions.values()
+                                                                                       .stream()
+                                                                                       .map(p -> p.orElse(null))
+                                                                                       .filter(Objects::nonNull) // Can be replaced by Optional::stream after java 11
+                                                                                       .allMatch(p -> (p instanceof NoRestrictionPolicy)));
+  }
+
+  /**
+   * Returns an error string if the AuthorizationResult doesn't permit all requried access.
+   */
+  public String getErrorMessage()
   {
     switch (permission) {
-      case ALLOW_NO_RESTRICTION:
-        return Optional.empty();
       case DENY:
-        return Optional.of(Objects.requireNonNull(failureMessage));
+        return Objects.requireNonNull(failureMessage);
       case ALLOW_WITH_RESTRICTION:
-        if (policyRestrictionsNotPermitted && policyRestrictions.values()
-                                                                .stream()
-                                                                .flatMap(policy -> policy.isPresent()
-                                                                                   ? Stream.of(policy.get())
-                                                                                   : Stream.empty()) // Can be replaced by Optional.stream after Java 11
-                                                                .anyMatch(p -> !p.hasNoRestriction())) {
-          return Optional.of(Access.DEFAULT_ERROR_MESSAGE);
+        if (!isUserWithNoRestriction()) {
+          return Access.DEFAULT_ERROR_MESSAGE;
         }
-        return Optional.empty();
       default:
         throw DruidException.defensive("unreachable");
     }
@@ -190,18 +162,6 @@ public class AuthorizationResult
   public Map<String, Optional<Policy>> getPolicy()
   {
     return policyRestrictions;
-  }
-
-  @Nullable
-  public Set<ResourceAction> getSqlResourceActions()
-  {
-    return sqlResourceActions;
-  }
-
-  @Nullable
-  public Set<ResourceAction> getAllResourceActions()
-  {
-    return allResourceActions;
   }
 
   @Override
@@ -216,15 +176,13 @@ public class AuthorizationResult
     AuthorizationResult that = (AuthorizationResult) o;
     return Objects.equals(permission, that.permission) &&
            Objects.equals(failureMessage, that.failureMessage) &&
-           Objects.equals(policyRestrictions, that.policyRestrictions) &&
-           Objects.equals(sqlResourceActions, that.sqlResourceActions) &&
-           Objects.equals(allResourceActions, that.allResourceActions);
+           Objects.equals(policyRestrictions, that.policyRestrictions);
   }
 
   @Override
   public int hashCode()
   {
-    return Objects.hash(permission, failureMessage, policyRestrictions, sqlResourceActions, allResourceActions);
+    return Objects.hash(permission, failureMessage, policyRestrictions);
   }
 
   @Override
@@ -236,10 +194,42 @@ public class AuthorizationResult
            + failureMessage
            + ", policyRestrictions="
            + policyRestrictions
-           + ", sqlResourceActions="
-           + sqlResourceActions
-           + ", allResourceActions="
-           + allResourceActions
            + "]";
+  }
+
+  private void validateFailureMessageIsSet()
+  {
+    Preconditions.checkArgument(
+        !Strings.isNullOrEmpty(failureMessage),
+        "Failure message must be set for permission[%s]",
+        permission
+    );
+  }
+
+  private void validateFailureMessageNull()
+  {
+    Preconditions.checkArgument(
+        failureMessage == null,
+        "Failure message must be null for permission[%s]",
+        permission
+    );
+  }
+
+  private void validatePolicyRestrictionEmpty()
+  {
+    Preconditions.checkArgument(
+        policyRestrictions.isEmpty(),
+        "Policy restrictions not allowed for permission[%s]",
+        permission
+    );
+  }
+
+  private void validatePolicyRestrictionNonEmpty()
+  {
+    Preconditions.checkArgument(
+        !policyRestrictions.isEmpty(),
+        "Policy restrictions must exist for permission[%s]",
+        permission
+    );
   }
 }

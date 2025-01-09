@@ -19,25 +19,16 @@
 
 package org.apache.druid.query.policy;
 
-import com.fasterxml.jackson.annotation.JsonSubTypes;
-import com.fasterxml.jackson.annotation.JsonTypeInfo;
 import org.apache.druid.segment.CursorBuildSpec;
+import org.junit.Assert;
+import org.junit.Test;
 
-/**
- * Extensible interface for a granular-level (e.x. row filter) restriction on read-table access. Implementations must be
- * Jackson-serializable.
- */
-@JsonTypeInfo(use = JsonTypeInfo.Id.NAME, property = "type")
-@JsonSubTypes({
-    @JsonSubTypes.Type(value = RowFilterPolicy.class, name = "row"),
-    @JsonSubTypes.Type(value = NoRestrictionPolicy.class, name = "noRestriction")
-})
-public interface Policy
+public class NoRestrictionPolicyTest
 {
-  /**
-   * Apply this policy to a {@link CursorBuildSpec} to seamlessly enforce policies for cursor-based queries. The
-   * application must encapsulate 100% of the requirements of this policy.
-   */
-  CursorBuildSpec visit(CursorBuildSpec spec);
-
+  @Test
+  public void testVisit()
+  {
+    final NoRestrictionPolicy policy = NoRestrictionPolicy.INSTANCE;
+    Assert.assertEquals(CursorBuildSpec.FULL_SCAN, policy.visit(CursorBuildSpec.FULL_SCAN));
+  }
 }

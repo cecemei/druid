@@ -19,34 +19,109 @@
 
 package org.apache.druid.segment;
 
-import org.apache.druid.query.filter.DimFilter;
+import org.apache.druid.query.policy.NoRestrictionPolicy;
+import org.apache.druid.query.policy.Policy;
+import org.apache.druid.timeline.SegmentId;
+import org.joda.time.Interval;
 
+import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
+import java.io.Closeable;
+import java.io.IOException;
+import java.util.Optional;
 
-public class RestrictedSegment extends WrappedSegmentReference
+/**
+ * A wrapped {@link SegmentReference} with a {@link Policy} restriction. The policy must be applied when querying the
+ * wrapped segment, e.x {@link #asCursorFactory()} returns a policy-enforced {@link RestrictedCursorFactory}. The policy
+ * and wrapped SegmentReference (i.e. delegate) can't be accessed directly.
+ * <p>
+ * There's a backdoor to get the wrapped SegmentReference through {@code as(BypassRestrictedSegment.class)}, returning
+ * a policy-aware (but not enforced) {@link BypassRestrictedSegment} instance.
+ */
+public class RestrictedSegment implements SegmentReference
 {
-  @Nullable
-  private final DimFilter filter;
+  protected final SegmentReference delegate;
+  protected final Policy policy;
 
   public RestrictedSegment(
       SegmentReference delegate,
-      @Nullable DimFilter filter
+      Policy policy
   )
   {
-    super(delegate);
-    this.filter = filter;
+    this.delegate = delegate;
+    this.policy = policy;
+  }
+
+  @Override
+  public Optional<Closeable> acquireReferences()
+  {
+    return delegate.acquireReferences();
+  }
+
+  @Override
+  public SegmentId getId()
+  {
+    return delegate.getId();
+  }
+
+  @Override
+  public Interval getDataInterval()
+  {
+    return delegate.getDataInterval();
   }
 
   @Override
   public CursorFactory asCursorFactory()
   {
-    return new RestrictedCursorFactory(delegate.asCursorFactory(), filter);
+    return new RestrictedCursorFactory(delegate.asCursorFactory(), policy);
   }
 
   @Nullable
   @Override
   public QueryableIndex asQueryableIndex()
   {
-    throw new RuntimeException("Can't get a queryable index from restricted segment.");
+    return null;
+  }
+
+  @Nullable
+  @Override
+  public <T> T as(@Nonnull Class<T> clazz)
+  {
+    if (CursorFactory.class.equals(clazz)) {
+      return (T) asCursorFactory();
+    } else if (QueryableIndex.class.equals(clazz)) {
+      return null;
+    } else if (TimeBoundaryInspector.class.equals(clazz)) {
+      return (T) WrappedTimeBoundaryInspector.create(delegate.as(TimeBoundaryInspector.class));
+    } else if (TopNOptimizationInspector.class.equals(clazz)) {
+      return (T) new SimpleTopNOptimizationInspector(policy instanceof NoRestrictionPolicy);
+    } else if (BypassRestrictedSegment.class.equals(clazz)) {
+      // A backdoor solution to get the wrapped segment, effectively bypassing the policy.
+      return (T) new BypassRestrictedSegment(delegate, policy);
+    }
+
+    // Unless we know there's no restriction, it's dangerous to return the implementation of a particular interface.
+    if (policy instanceof NoRestrictionPolicy) {
+      return delegate.as(clazz);
+    }
+    return null;
+  }
+
+  @Override
+  public boolean isTombstone()
+  {
+    return delegate.isTombstone();
+  }
+
+  @Override
+  public void close() throws IOException
+  {
+    delegate.close();
+  }
+
+  @Override
+  public String asString()
+  {
+    return delegate.asString();
   }
 }
