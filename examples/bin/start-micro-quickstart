@@ -21,4 +21,5 @@ PWD="$(pwd)"
 WHEREAMI="$(dirname "$0")"
 WHEREAMI="$(cd "$WHEREAMI" && pwd)"
 
+timeout 2m sh -c 'until $0 "$@"; do sleep 2; done' nc -zv localhost 5432
 exec "$WHEREAMI/supervise" -c "$WHEREAMI/../conf/supervise/single-server/micro-quickstart.conf"
