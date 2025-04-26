@@ -33,7 +33,6 @@ import com.google.common.util.concurrent.MoreExecutors;
 import org.apache.druid.client.ImmutableDruidDataSource;
 import org.apache.druid.client.coordinator.CoordinatorClient;
 import org.apache.druid.client.coordinator.NoopCoordinatorClient;
-import org.apache.druid.client.indexing.NoopOverlordClient;
 import org.apache.druid.client.indexing.TaskStatusResponse;
 import org.apache.druid.data.input.InputFormat;
 import org.apache.druid.data.input.MaxSizeSplitHintSpec;
@@ -83,6 +82,8 @@ import org.apache.druid.math.expr.ExprMacroTable;
 import org.apache.druid.query.aggregation.AggregatorFactory;
 import org.apache.druid.query.aggregation.LongSumAggregatorFactory;
 import org.apache.druid.query.expression.LookupEnabledTestExprMacroTable;
+import org.apache.druid.query.policy.NoopPolicyEnforcer;
+import org.apache.druid.rpc.indexing.NoopOverlordClient;
 import org.apache.druid.segment.DataSegmentsWithSchemas;
 import org.apache.druid.segment.IndexIO;
 import org.apache.druid.segment.TestIndex;
@@ -213,6 +214,16 @@ public class AbstractParallelIndexSupervisorTaskTest extends IngestionTestBase
       double transientApiCallFailureRate
   )
   {
+    this(transientTaskFailureRate, transientApiCallFailureRate, false);
+  }
+
+  protected AbstractParallelIndexSupervisorTaskTest(
+      double transientTaskFailureRate,
+      double transientApiCallFailureRate,
+      boolean useSegmentMetadataCache
+  )
+  {
+    super(useSegmentMetadataCache);
     this.transientTaskFailureRate = transientTaskFailureRate;
     this.transientApiCallFailureRate = transientApiCallFailureRate;
   }
@@ -678,6 +689,7 @@ public class AbstractParallelIndexSupervisorTaskTest extends IngestionTestBase
         .indexMergerV9(getIndexMergerV9Factory().create(task.getContextValue(Tasks.STORE_EMPTY_COLUMNS_KEY, true)))
         .intermediaryDataManager(intermediaryDataManager)
         .taskReportFileWriter(new SingleFileTaskReportFileWriter(reportsFile))
+        .policyEnforcer(NoopPolicyEnforcer.instance())
         .authorizerMapper(AuthTestUtils.TEST_AUTHORIZER_MAPPER)
         .chatHandlerProvider(new NoopChatHandlerProvider())
         .rowIngestionMetersFactory(new TestUtils().getRowIngestionMetersFactory())
@@ -716,7 +728,7 @@ public class AbstractParallelIndexSupervisorTaskTest extends IngestionTestBase
           location.getBucketId()
       );
       if (!zippedFile.isPresent()) {
-        throw new ISE("Can't find segment file for location[%s] at path[%s]", location);
+        throw new ISE("Can't find segment file for location[%s] at path[%s]", location, zippedFile);
       }
       final File fetchedFile = new File(partitionDir, StringUtils.format("temp_%s", location.getSubTaskId()));
       FileUtils.writeAtomically(

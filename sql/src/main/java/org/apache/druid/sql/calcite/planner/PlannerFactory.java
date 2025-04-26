@@ -40,9 +40,10 @@ import org.apache.calcite.tools.Frameworks;
 import org.apache.druid.guice.annotations.Json;
 import org.apache.druid.math.expr.ExprMacroTable;
 import org.apache.druid.query.QueryContexts;
+import org.apache.druid.query.policy.PolicyEnforcer;
 import org.apache.druid.segment.join.JoinableFactoryWrapper;
-import org.apache.druid.server.security.Access;
 import org.apache.druid.server.security.AuthConfig;
+import org.apache.druid.server.security.AuthorizationResult;
 import org.apache.druid.server.security.AuthorizerMapper;
 import org.apache.druid.server.security.NoopEscalator;
 import org.apache.druid.sql.calcite.parser.DruidSqlParserImplFactory;
@@ -81,6 +82,7 @@ public class PlannerFactory extends PlannerToolbox
       final JoinableFactoryWrapper joinableFactoryWrapper,
       final CatalogResolver catalog,
       final AuthConfig authConfig,
+      final PolicyEnforcer policyEnforcer,
       final DruidHookDispatcher hookDispatcher
   )
   {
@@ -96,6 +98,7 @@ public class PlannerFactory extends PlannerToolbox
         calciteRuleManager,
         authorizerMapper,
         authConfig,
+        policyEnforcer,
         hookDispatcher
     );
   }
@@ -127,13 +130,17 @@ public class PlannerFactory extends PlannerToolbox
    * and ready to go authorization result.
    */
   @VisibleForTesting
-  public DruidPlanner createPlannerForTesting(final SqlEngine engine, final String sql, final Map<String, Object> queryContext)
+  public DruidPlanner createPlannerForTesting(
+      final SqlEngine engine,
+      final String sql,
+      final Map<String, Object> queryContext
+  )
   {
     final DruidPlanner thePlanner = createPlanner(engine, sql, queryContext, null);
     thePlanner.getPlannerContext()
               .setAuthenticationResult(NoopEscalator.getInstance().createEscalatedAuthenticationResult());
     thePlanner.validate();
-    thePlanner.authorize(ra -> Access.OK, ImmutableSet.of());
+    thePlanner.authorize(ra -> AuthorizationResult.ALLOW_NO_RESTRICTION, ImmutableSet.of());
     return thePlanner;
   }
 
