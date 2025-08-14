@@ -21,6 +21,7 @@ package org.apache.druid.server;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Iterables;
 import com.google.inject.Inject;
@@ -44,6 +45,7 @@ import org.apache.druid.query.DruidMetrics;
 import org.apache.druid.query.FluentQueryRunner;
 import org.apache.druid.query.FrameBasedInlineDataSource;
 import org.apache.druid.query.FrameSignaturePair;
+import org.apache.druid.query.GenericQueryMetricsFactory;
 import org.apache.druid.query.GlobalTableDataSource;
 import org.apache.druid.query.InlineDataSource;
 import org.apache.druid.query.Query;
@@ -115,6 +117,7 @@ public class ClientQuerySegmentWalker implements QuerySegmentWalker
   private final CacheConfig cacheConfig;
   private final SubqueryGuardrailHelper subqueryGuardrailHelper;
   private final SubqueryCountStatsProvider subqueryStatsProvider;
+  private final GenericQueryMetricsFactory genericQueryMetricsFactory;
 
   public ClientQuerySegmentWalker(
       ServiceEmitter emitter,
@@ -128,7 +131,8 @@ public class ClientQuerySegmentWalker implements QuerySegmentWalker
       Cache cache,
       CacheConfig cacheConfig,
       SubqueryGuardrailHelper subqueryGuardrailHelper,
-      SubqueryCountStatsProvider subqueryStatsProvider
+      SubqueryCountStatsProvider subqueryStatsProvider,
+      GenericQueryMetricsFactory genericQueryMetricsFactory
   )
   {
     this.emitter = emitter;
@@ -143,6 +147,7 @@ public class ClientQuerySegmentWalker implements QuerySegmentWalker
     this.cacheConfig = cacheConfig;
     this.subqueryGuardrailHelper = subqueryGuardrailHelper;
     this.subqueryStatsProvider = subqueryStatsProvider;
+    this.genericQueryMetricsFactory = genericQueryMetricsFactory;
   }
 
   @Inject
@@ -158,7 +163,8 @@ public class ClientQuerySegmentWalker implements QuerySegmentWalker
       Cache cache,
       CacheConfig cacheConfig,
       SubqueryGuardrailHelper subqueryGuardrailHelper,
-      SubqueryCountStatsProvider subqueryStatsProvider
+      SubqueryCountStatsProvider subqueryStatsProvider,
+      GenericQueryMetricsFactory genericQueryMetricsFactory
   )
   {
     this(
@@ -173,7 +179,8 @@ public class ClientQuerySegmentWalker implements QuerySegmentWalker
         cache,
         cacheConfig,
         subqueryGuardrailHelper,
-        subqueryStatsProvider
+        subqueryStatsProvider,
+        genericQueryMetricsFactory
     );
   }
 
@@ -396,7 +403,10 @@ public class ClientQuerySegmentWalker implements QuerySegmentWalker
         return toInlineDataSource(
             subQuery,
             queryResults,
-            (QueryToolChest) new QueryLogicCompatToolChest(subQuery.getResultRowSignature()),
+            (QueryToolChest) new QueryLogicCompatToolChest(
+                subQuery.getResultRowSignature(),
+                genericQueryMetricsFactory
+            ),
             subqueryRowLimitAccumulator,
             subqueryMemoryLimitAccumulator,
             cannotMaterializeToFrames,
@@ -591,7 +601,8 @@ public class ClientQuerySegmentWalker implements QuerySegmentWalker
                     query,
                     objectMapper,
                     cache,
-                    cacheConfig
+                    cacheConfig,
+                    emitter
                 )
         );
   }
@@ -607,7 +618,8 @@ public class ClientQuerySegmentWalker implements QuerySegmentWalker
    * @param parentQueryResourceId Parent Query's Query Resource ID
    * @return DataSource populated with the subqueries
    */
-  private DataSource generateSubqueryIds(
+  @VisibleForTesting
+  public static DataSource generateSubqueryIds(
       DataSource rootDataSource,
       @Nullable final String parentQueryId,
       @Nullable final String parentSqlQueryId,
@@ -654,7 +666,7 @@ public class ClientQuerySegmentWalker implements QuerySegmentWalker
    * @param parentQueryResourceId        Parent query's resource Id
    * @return Populates the subqueries from the map
    */
-  private DataSource insertSubqueryIds(
+  private static DataSource insertSubqueryIds(
       DataSource currentDataSource,
       Map<QueryDataSource, Pair<Integer, Integer>> queryDataSourceToSubqueryIds,
       @Nullable final String parentQueryId,

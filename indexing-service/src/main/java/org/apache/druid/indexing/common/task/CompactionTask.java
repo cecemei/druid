@@ -27,13 +27,13 @@ import com.fasterxml.jackson.annotation.JsonInclude.Include;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Preconditions;
+import com.google.common.base.Verify;
 import com.google.common.collect.BiMap;
 import com.google.common.collect.HashBiMap;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Lists;
-import org.apache.curator.shaded.com.google.common.base.Verify;
 import org.apache.druid.client.indexing.ClientCompactionTaskGranularitySpec;
 import org.apache.druid.client.indexing.ClientCompactionTaskQuery;
 import org.apache.druid.collections.ResourceHolder;
@@ -1178,12 +1178,13 @@ public class CompactionTask extends AbstractBatchIndexTask implements PendingSeg
           }
           projections.put(
               schema.getName(),
-              new AggregateProjectionSpec(
-                  schema.getName(),
-                  schema.getVirtualColumns(),
-                  columnSchemas,
-                  schema.getAggregators()
-              )
+              AggregateProjectionSpec.builder()
+                                     .name(schema.getName())
+                                     .virtualColumns(schema.getVirtualColumns())
+                                     .filter(schema.getFilter())
+                                     .groupingColumns(columnSchemas)
+                                     .aggregators(schema.getAggregators())
+                                     .build()
           );
         }
       }

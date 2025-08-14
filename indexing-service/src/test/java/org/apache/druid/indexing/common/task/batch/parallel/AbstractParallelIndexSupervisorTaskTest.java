@@ -30,10 +30,10 @@ import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.common.util.concurrent.ListeningExecutorService;
 import com.google.common.util.concurrent.MoreExecutors;
-import org.apache.druid.client.ImmutableDruidDataSource;
 import org.apache.druid.client.coordinator.CoordinatorClient;
 import org.apache.druid.client.coordinator.NoopCoordinatorClient;
 import org.apache.druid.client.indexing.TaskStatusResponse;
+import org.apache.druid.common.utils.IdUtils;
 import org.apache.druid.data.input.InputFormat;
 import org.apache.druid.data.input.MaxSizeSplitHintSpec;
 import org.apache.druid.data.input.impl.CSVParseSpec;
@@ -663,7 +663,7 @@ public class AbstractParallelIndexSupervisorTaskTest extends IngestionTestBase
   {
     TaskConfig config = new TaskConfigBuilder()
         .build();
-    CentralizedDatasourceSchemaConfig centralizedDatasourceSchemaConfig = CentralizedDatasourceSchemaConfig.create(true);
+    CentralizedDatasourceSchemaConfig centralizedDatasourceSchemaConfig = CentralizedDatasourceSchemaConfig.enabled(true);
     return new TaskToolbox.Builder()
         .config(config)
         .taskExecutorNode(new DruidNode("druid/middlemanager", "localhost", false, 8091, null, true, false))
@@ -1025,26 +1025,23 @@ public class AbstractParallelIndexSupervisorTaskTest extends IngestionTestBase
     @Override
     public ListenableFuture<DataSegment> fetchSegment(String dataSource, String segmentId, boolean includeUnused)
     {
-      ImmutableDruidDataSource druidDataSource;
       try {
-        druidDataSource = exec.submit(
-            () -> getSegmentsMetadataManager().getImmutableDataSourceWithUsedSegments(dataSource)
+        final SegmentId parsedSegmentId = IdUtils.getValidSegmentId(dataSource, segmentId);
+        final DataSegment segment = exec.submit(
+            () -> includeUnused
+                  ? getStorageCoordinator().retrieveSegmentForId(parsedSegmentId)
+                  : getStorageCoordinator().retrieveUsedSegmentForId(parsedSegmentId)
         ).get();
+
+        if (segment == null) {
+          throw new ISE("Can't find segment for id[%s]", segmentId);
+        } else {
+          return Futures.immediateFuture(segment);
+        }
       }
       catch (InterruptedException | ExecutionException e) {
         throw new RuntimeException(e);
       }
-      if (druidDataSource == null) {
-        throw new ISE("Unknown datasource[%s]", dataSource);
-      }
-
-      for (SegmentId possibleSegmentId : SegmentId.iteratePossibleParsingsWithDataSource(dataSource, segmentId)) {
-        DataSegment segment = druidDataSource.getSegment(possibleSegmentId);
-        if (segment != null) {
-          return Futures.immediateFuture(segment);
-        }
-      }
-      throw new ISE("Can't find segment for id[%s]", segmentId);
     }
   }
 }

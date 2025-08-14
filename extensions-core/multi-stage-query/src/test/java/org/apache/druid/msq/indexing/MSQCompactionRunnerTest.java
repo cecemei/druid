@@ -50,6 +50,7 @@ import org.apache.druid.msq.indexing.destination.DataSourceMSQDestination;
 import org.apache.druid.msq.kernel.WorkerAssignmentStrategy;
 import org.apache.druid.msq.util.MultiStageQueryContext;
 import org.apache.druid.query.OrderBy;
+import org.apache.druid.query.Query;
 import org.apache.druid.query.aggregation.AggregatorFactory;
 import org.apache.druid.query.aggregation.CountAggregatorFactory;
 import org.apache.druid.query.aggregation.LongSumAggregatorFactory;
@@ -63,7 +64,6 @@ import org.apache.druid.query.scan.ScanQuery;
 import org.apache.druid.segment.AutoTypeColumnSchema;
 import org.apache.druid.segment.IndexSpec;
 import org.apache.druid.segment.NestedDataColumnSchema;
-import org.apache.druid.segment.VirtualColumns;
 import org.apache.druid.segment.column.ColumnHolder;
 import org.apache.druid.segment.column.ColumnType;
 import org.apache.druid.segment.data.CompressionFactory;
@@ -117,19 +117,19 @@ public class MSQCompactionRunnerTest
       NESTED_DIMENSION,
       AUTO_DIMENSION
   );
-  private static final AggregateProjectionSpec PROJECTION_SPEC = new AggregateProjectionSpec(
-      "projection",
-      VirtualColumns.create(
-          Granularities.toVirtualColumn(
-              Granularities.HOUR,
-              Granularities.GRANULARITY_VIRTUAL_COLUMN_NAME
-          )
-      ),
-      ImmutableList.of(STRING_DIMENSION),
-      new AggregatorFactory[]{
-          new LongSumAggregatorFactory(LONG_DIMENSION.getName(), LONG_DIMENSION.getName())
-      }
-  );
+  private static final AggregateProjectionSpec PROJECTION_SPEC =
+      AggregateProjectionSpec.builder("projection")
+                             .virtualColumns(
+                                 Granularities.toVirtualColumn(
+                                     Granularities.HOUR,
+                                     Granularities.GRANULARITY_VIRTUAL_COLUMN_NAME
+                                 )
+                             )
+                             .groupingColumns(STRING_DIMENSION)
+                             .aggregators(
+                                 new LongSumAggregatorFactory(LONG_DIMENSION.getName(), LONG_DIMENSION.getName())
+                             )
+                             .build();
   private static final Map<Interval, DataSchema> INTERVAL_DATASCHEMAS = ImmutableMap.of(
       COMPACTION_INTERVAL,
       new CombinedDataSchema(
@@ -396,13 +396,14 @@ public class MSQCompactionRunnerTest
 
     MSQControllerTask msqControllerTask = Iterables.getOnlyElement(msqControllerTasks);
 
-    MSQSpec actualMSQSpec = msqControllerTask.getQuerySpec();
+    LegacyMSQSpec actualMSQSpec = msqControllerTask.getQuerySpec();
 
     Assert.assertEquals(getExpectedTuningConfig(), actualMSQSpec.getTuningConfig());
     Assert.assertEquals(getExpectedDestination(), actualMSQSpec.getDestination());
 
-    Assert.assertTrue(actualMSQSpec.getQuery() instanceof ScanQuery);
-    ScanQuery scanQuery = (ScanQuery) actualMSQSpec.getQuery();
+    Query<?> query = actualMSQSpec.getQuery();
+    Assert.assertTrue(query instanceof ScanQuery);
+    ScanQuery scanQuery = (ScanQuery) query;
 
     List<String> expectedColumns = new ArrayList<>();
     List<ColumnType> expectedColumnTypes = new ArrayList<>();
@@ -477,10 +478,11 @@ public class MSQCompactionRunnerTest
         Collections.singletonMap(COMPACTION_INTERVAL, dataSchema)
     );
 
-    MSQSpec actualMSQSpec = Iterables.getOnlyElement(msqControllerTasks).getQuerySpec();
+    LegacyMSQSpec actualMSQSpec = Iterables.getOnlyElement(msqControllerTasks).getQuerySpec();
 
-    Assert.assertTrue(actualMSQSpec.getQuery() instanceof ScanQuery);
-    ScanQuery scanQuery = (ScanQuery) actualMSQSpec.getQuery();
+    Query<?> query = actualMSQSpec.getQuery();
+    Assert.assertTrue(query instanceof ScanQuery);
+    ScanQuery scanQuery = (ScanQuery) query;
 
     // Dimensions should already list __time and the order should remain intact
     Assert.assertEquals(
@@ -527,13 +529,14 @@ public class MSQCompactionRunnerTest
 
     MSQControllerTask msqControllerTask = Iterables.getOnlyElement(msqControllerTasks);
 
-    MSQSpec actualMSQSpec = msqControllerTask.getQuerySpec();
+    LegacyMSQSpec actualMSQSpec = msqControllerTask.getQuerySpec();
 
     Assert.assertEquals(getExpectedTuningConfig(), actualMSQSpec.getTuningConfig());
     Assert.assertEquals(getExpectedDestination(), actualMSQSpec.getDestination());
 
-    Assert.assertTrue(actualMSQSpec.getQuery() instanceof GroupByQuery);
-    GroupByQuery groupByQuery = (GroupByQuery) actualMSQSpec.getQuery();
+    Query<?> query = actualMSQSpec.getQuery();
+    Assert.assertTrue(query instanceof GroupByQuery);
+    GroupByQuery groupByQuery = (GroupByQuery) query;
 
     Assert.assertEquals(dimFilter, groupByQuery.getFilter());
     Assert.assertEquals(
@@ -612,7 +615,7 @@ public class MSQCompactionRunnerTest
 
     MSQControllerTask msqControllerTask = Iterables.getOnlyElement(msqControllerTasks);
 
-    MSQSpec actualMSQSpec = msqControllerTask.getQuerySpec();
+    LegacyMSQSpec actualMSQSpec = msqControllerTask.getQuerySpec();
 
     Assert.assertEquals(getExpectedTuningConfig(), actualMSQSpec.getTuningConfig());
     Assert.assertEquals(getExpectedDestinationWithProjections(), actualMSQSpec.getDestination());

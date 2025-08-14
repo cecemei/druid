@@ -28,6 +28,7 @@ import org.apache.druid.java.util.common.ISE;
 import org.apache.druid.java.util.common.Intervals;
 import org.apache.druid.java.util.common.StringUtils;
 import org.apache.druid.java.util.common.logger.Logger;
+import org.apache.druid.query.aggregation.LongSumAggregatorFactory;
 import org.apache.druid.testing.IntegrationTestingConfig;
 import org.apache.druid.testing.clients.CoordinatorResourceTestClient;
 import org.apache.druid.testing.clients.OverlordResourceTestClient;
@@ -159,6 +160,45 @@ public abstract class AbstractIndexerTest
     );
   }
 
+  /**
+   * Retries until segments have been loaded.
+   */
+  protected void waitForSegmentsToLoad(String dataSource)
+  {
+    ITRetryUtil.retryUntilTrue(
+        () -> coordinator.areSegmentsLoaded(dataSource),
+        "Segments are loaded"
+    );
+  }
+
+  /**
+   * Retries until the segment count is as expected.
+   */
+  protected void waitUntilDatasourceSegmentCountEquals(String dataSource, int numExpectedSegments)
+  {
+    ITRetryUtil.retryUntilEquals(
+        () -> coordinator.getFullSegmentsMetadata(dataSource).size(),
+        numExpectedSegments,
+        "Segment count"
+    );
+  }
+
+  /**
+   * Retries until the total row count is as expected.
+   */
+  protected void waitUntilDatasourceRowCountEquals(String dataSource, long totalRows)
+  {
+    ITRetryUtil.retryUntilEquals(
+        () -> queryHelper.countRows(
+            dataSource,
+            Intervals.ETERNITY,
+            name -> new LongSumAggregatorFactory(name, "count")
+        ),
+        totalRows,
+        "Total row count in datasource"
+    );
+  }
+
   public static String getResourceAsString(String file) throws IOException
   {
     try (final InputStream inputStream = getResourceAsStream(file)) {
@@ -171,7 +211,7 @@ public abstract class AbstractIndexerTest
 
   public static InputStream getResourceAsStream(String resource)
   {
-    return ITCompactionTaskTest.class.getResourceAsStream(resource);
+    return AbstractIndexerTest.class.getResourceAsStream(resource);
   }
 
   public static List<String> listResources(String dir) throws IOException

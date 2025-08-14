@@ -89,6 +89,7 @@ import org.apache.druid.sql.calcite.schema.DruidSchemaName;
 import org.apache.druid.sql.calcite.schema.NamedSchema;
 import org.apache.druid.sql.calcite.util.CalciteTestBase;
 import org.apache.druid.sql.calcite.util.CalciteTests;
+import org.apache.druid.sql.calcite.util.QueryFrameworkUtils;
 import org.apache.druid.sql.guice.SqlModule;
 import org.apache.druid.sql.hook.DruidHookDispatcher;
 import org.eclipse.jetty.server.Server;
@@ -108,6 +109,7 @@ import org.skife.jdbi.v2.ResultIterator;
 
 import java.io.File;
 import java.io.IOException;
+import java.net.InetSocketAddress;
 import java.sql.Array;
 import java.sql.Connection;
 import java.sql.DatabaseMetaData;
@@ -205,7 +207,7 @@ public class DruidAvaticaHandlerTest extends CalciteTestBase
     ServerWrapper(final DruidMeta druidMeta) throws Exception
     {
       this.druidMeta = druidMeta;
-      server = new Server(0);
+      server = new Server(new InetSocketAddress("localhost", 0));
       server.setHandler(getAvaticaHandler(druidMeta));
       server.start();
       url = StringUtils.format(
@@ -276,6 +278,10 @@ public class DruidAvaticaHandlerTest extends CalciteTestBase
               binder.bind(AuthorizerMapper.class).toInstance(CalciteTests.TEST_AUTHORIZER_MAPPER);
               binder.bind(Escalator.class).toInstance(CalciteTests.TEST_AUTHENTICATOR_ESCALATOR);
               binder.install(new PolicyModule());
+              binder.bind(AuthConfig.class)
+                    .toInstance(AuthConfig.newBuilder().setAuthorizeQueryContextParams(true).build());
+              binder.bind(DefaultQueryConfig.class)
+                    .toInstance(new DefaultQueryConfig(ImmutableMap.of("forbidden-key", "system-default-value")));
               binder.bind(RequestLogger.class).toInstance(testRequestLogger);
               binder.bind(DruidSchemaCatalog.class).toInstance(rootSchema);
               for (NamedSchema schema : rootSchema.getNamedSchemas().values()) {
@@ -342,7 +348,7 @@ public class DruidAvaticaHandlerTest extends CalciteTestBase
   public void testSelectCount() throws SQLException
   {
     try (Statement stmt = client.createStatement()) {
-      final ResultSet resultSet = stmt.executeQuery("SELECT COUNT(*) AS cnt FROM druid.foo");
+      final ResultSet resultSet = stmt.executeQuery("SELECT COUNT(*) AS cnt FROM druid.foo;");
       final List<Map<String, Object>> rows = getRows(resultSet);
       Assert.assertEquals(
           ImmutableList.of(
@@ -350,6 +356,20 @@ public class DruidAvaticaHandlerTest extends CalciteTestBase
           ),
           rows
       );
+    }
+  }
+
+  @Test
+  public void testForbiddenContextKey() throws SQLException
+  {
+    final Properties propertiesSetForbiddenKey = new Properties();
+    propertiesSetForbiddenKey.setProperty("user", "regularUserLA");
+    propertiesSetForbiddenKey.setProperty("forbidden-key", "val");
+    try (Statement stmt = DriverManager.getConnection(server.url, propertiesSetForbiddenKey).createStatement()) {
+      AvaticaSqlException e = Assert.assertThrows(AvaticaSqlException.class, () -> {
+        stmt.executeQuery("SELECT COUNT(*) AS cnt FROM druid.foo");
+      });
+      Assert.assertTrue(e.getMessage().contains("Remote driver error: Unauthorized"));
     }
   }
 
@@ -475,7 +495,7 @@ public class DruidAvaticaHandlerTest extends CalciteTestBase
               ImmutableMap.of(
                   "PLAN",
                   StringUtils.format(
-                      "[{\"query\":{\"queryType\":\"timeseries\",\"dataSource\":{\"type\":\"table\",\"name\":\"foo\"},\"intervals\":{\"type\":\"intervals\",\"intervals\":[\"-146136543-09-08T08:23:32.096Z/146140482-04-24T15:36:27.903Z\"]},\"granularity\":{\"type\":\"all\"},\"aggregations\":[{\"type\":\"count\",\"name\":\"a0\"}],\"context\":{\"sqlQueryId\":\"%s\",\"sqlStringifyArrays\":false,\"sqlTimeZone\":\"America/Los_Angeles\"}},\"signature\":[{\"name\":\"a0\",\"type\":\"LONG\"}],\"columnMappings\":[{\"queryColumn\":\"a0\",\"outputColumn\":\"cnt\"}]}]",
+                      "[{\"query\":{\"queryType\":\"timeseries\",\"dataSource\":{\"type\":\"table\",\"name\":\"foo\"},\"intervals\":{\"type\":\"intervals\",\"intervals\":[\"-146136543-09-08T08:23:32.096Z/146140482-04-24T15:36:27.903Z\"]},\"granularity\":{\"type\":\"all\"},\"aggregations\":[{\"type\":\"count\",\"name\":\"a0\"}],\"context\":{\"forbidden-key\":\"system-default-value\",\"sqlQueryId\":\"%s\",\"sqlStringifyArrays\":false,\"sqlTimeZone\":\"America/Los_Angeles\"}},\"signature\":[{\"name\":\"a0\",\"type\":\"LONG\"}],\"columnMappings\":[{\"queryColumn\":\"a0\",\"outputColumn\":\"cnt\"}]}]",
                       DUMMY_SQL_QUERY_ID
                   ),
                   "RESOURCES",
@@ -559,6 +579,12 @@ public class DruidAvaticaHandlerTest extends CalciteTestBase
             row(
                 Pair.of("TABLE_CAT", "druid"),
                 Pair.of("TABLE_NAME", CalciteTests.DATASOURCE3),
+                Pair.of("TABLE_SCHEM", "druid"),
+                Pair.of("TABLE_TYPE", "TABLE")
+            ),
+            row(
+                Pair.of("TABLE_CAT", "druid"),
+                Pair.of("TABLE_NAME", CalciteTests.RESTRICTED_BROADCAST_DATASOURCE),
                 Pair.of("TABLE_SCHEM", "druid"),
                 Pair.of("TABLE_TYPE", "TABLE")
             ),
@@ -657,6 +683,12 @@ public class DruidAvaticaHandlerTest extends CalciteTestBase
             row(
                 Pair.of("TABLE_CAT", "druid"),
                 Pair.of("TABLE_NAME", CalciteTests.DATASOURCE3),
+                Pair.of("TABLE_SCHEM", "druid"),
+                Pair.of("TABLE_TYPE", "TABLE")
+            ),
+            row(
+                Pair.of("TABLE_CAT", "druid"),
+                Pair.of("TABLE_NAME", CalciteTests.RESTRICTED_BROADCAST_DATASOURCE),
                 Pair.of("TABLE_SCHEM", "druid"),
                 Pair.of("TABLE_TYPE", "TABLE")
             ),
@@ -1048,7 +1080,7 @@ public class DruidAvaticaHandlerTest extends CalciteTestBase
 
   private SqlStatementFactory makeStatementFactory()
   {
-    return CalciteTests.createSqlStatementFactory(
+    return QueryFrameworkUtils.createSqlStatementFactory(
         CalciteTests.createMockSqlEngine(walker, conglomerate),
         new PlannerFactory(
             makeRootSchema(),
@@ -1081,6 +1113,7 @@ public class DruidAvaticaHandlerTest extends CalciteTestBase
 
     DruidMeta smallFrameDruidMeta = new DruidMeta(
         makeStatementFactory(),
+        DefaultQueryConfig.NIL,
         config,
         new ErrorHandler(new ServerConfig()),
         exec,
@@ -1141,6 +1174,7 @@ public class DruidAvaticaHandlerTest extends CalciteTestBase
 
     DruidMeta smallFrameDruidMeta = new DruidMeta(
         makeStatementFactory(),
+        DefaultQueryConfig.NIL,
         config,
         new ErrorHandler(new ServerConfig()),
         exec,
@@ -1695,6 +1729,7 @@ public class DruidAvaticaHandlerTest extends CalciteTestBase
     final CountDownLatch resultsLatch = new CountDownLatch(1);
     DruidMeta druidMeta = new DruidMeta(
         makeStatementFactory(),
+        DefaultQueryConfig.NIL,
         config,
         new ErrorHandler(new ServerConfig()),
         exec,
@@ -1787,6 +1822,36 @@ public class DruidAvaticaHandlerTest extends CalciteTestBase
 
     exec.shutdown();
     server.close();
+  }
+
+  @Test
+  public void testMultiStatementFails() throws SQLException
+  {
+    try (Statement stmt = client.createStatement()) {
+      Throwable t = Assert.assertThrows(
+          AvaticaSqlException.class,
+          () -> stmt.executeQuery("SET useApproxCountDistinct = true; SELECT COUNT(DISTINCT dim1) AS cnt FROM druid.foo")
+      );
+      // ugly error message for statement
+      Assert.assertEquals(
+          "Error -1 (00000) : Error while executing SQL \"SET useApproxCountDistinct = true; SELECT COUNT(DISTINCT dim1) AS cnt FROM druid.foo\": Remote driver error: QueryInterruptedException: SQL query string must contain only a single statement -> DruidException: SQL query string must contain only a single statement",
+          t.getMessage()
+      );
+    }
+  }
+
+  @Test
+  public void testMultiPreparedStatementFails() throws SQLException
+  {
+    Throwable t = Assert.assertThrows(
+        AvaticaSqlException.class,
+        () -> client.prepareStatement("SET vectorize = 'force'; SELECT COUNT(*) AS cnt FROM druid.foo")
+    );
+    // sad error message for prepared statement
+    Assert.assertEquals(
+        "Error -1 (00000) : while preparing SQL: SET vectorize = 'force'; SELECT COUNT(*) AS cnt FROM druid.foo",
+        t.getMessage()
+    );
   }
 
   // Test the async feature using DBI, as used internally in Druid.

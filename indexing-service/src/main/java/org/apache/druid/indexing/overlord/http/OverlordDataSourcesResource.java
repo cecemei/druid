@@ -31,7 +31,6 @@ import org.apache.druid.indexing.overlord.IndexerMetadataStorageCoordinator;
 import org.apache.druid.indexing.overlord.TaskMaster;
 import org.apache.druid.java.util.common.StringUtils;
 import org.apache.druid.java.util.common.logger.Logger;
-import org.apache.druid.metadata.SegmentsMetadataManager;
 import org.apache.druid.rpc.indexing.SegmentUpdateResponse;
 import org.apache.druid.server.http.SegmentsToUpdateFilter;
 import org.apache.druid.server.http.ServletResourceUtils;
@@ -65,7 +64,6 @@ public class OverlordDataSourcesResource
 {
   private static final Logger log = new Logger(OverlordDataSourcesResource.class);
 
-  private final SegmentsMetadataManager segmentsMetadataManager;
   private final IndexerMetadataStorageCoordinator metadataStorageCoordinator;
   private final TaskMaster taskMaster;
   private final AuditManager auditManager;
@@ -73,14 +71,12 @@ public class OverlordDataSourcesResource
   @Inject
   public OverlordDataSourcesResource(
       TaskMaster taskMaster,
-      SegmentsMetadataManager segmentsMetadataManager,
       IndexerMetadataStorageCoordinator metadataStorageCoordinator,
       AuditManager auditManager
   )
   {
     this.taskMaster = taskMaster;
     this.auditManager = auditManager;
-    this.segmentsMetadataManager = segmentsMetadataManager;
     this.metadataStorageCoordinator = metadataStorageCoordinator;
   }
 
@@ -92,14 +88,15 @@ public class OverlordDataSourcesResource
   @POST
   @Path("/{dataSourceName}")
   @Consumes(MediaType.APPLICATION_JSON)
+  @Produces(MediaType.APPLICATION_JSON)
   @ResourceFilters(DatasourceResourceFilter.class)
   public Response markAllNonOvershadowedSegmentsAsUsed(
       @PathParam("dataSourceName") final String dataSourceName,
       @Context HttpServletRequest req
   )
   {
-    SegmentUpdateOperation operation = () -> segmentsMetadataManager
-        .markAsUsedAllNonOvershadowedSegmentsInDataSource(dataSourceName);
+    SegmentUpdateOperation operation = () -> metadataStorageCoordinator
+        .markAllNonOvershadowedSegmentsAsUsed(dataSourceName);
     return performSegmentUpdate(dataSourceName, operation);
   }
 
@@ -127,6 +124,7 @@ public class OverlordDataSourcesResource
   @POST
   @Path("/{dataSourceName}/markUsed")
   @Consumes(MediaType.APPLICATION_JSON)
+  @Produces(MediaType.APPLICATION_JSON)
   @ResourceFilters(DatasourceResourceFilter.class)
   public Response markNonOvershadowedSegmentsAsUsed(
       @PathParam("dataSourceName") final String dataSourceName,
@@ -143,14 +141,14 @@ public class OverlordDataSourcesResource
         final Interval interval = payload.getInterval();
         final List<String> versions = payload.getVersions();
         if (interval != null) {
-          return segmentsMetadataManager.markAsUsedNonOvershadowedSegmentsInInterval(dataSourceName, interval, versions);
+          return metadataStorageCoordinator.markNonOvershadowedSegmentsAsUsed(dataSourceName, interval, versions);
         } else {
           final Set<String> segmentIds = payload.getSegmentIds();
           if (segmentIds == null || segmentIds.isEmpty()) {
             return 0;
           }
 
-          return segmentsMetadataManager.markAsUsedNonOvershadowedSegments(
+          return metadataStorageCoordinator.markNonOvershadowedSegmentsAsUsed(
               dataSourceName,
               IdUtils.getValidSegmentIds(dataSourceName, segmentIds)
           );
@@ -210,29 +208,46 @@ public class OverlordDataSourcesResource
   @POST
   @Path("/{dataSourceName}/segments/{segmentId}")
   @Consumes(MediaType.APPLICATION_JSON)
+  @Produces(MediaType.APPLICATION_JSON)
   @ResourceFilters(DatasourceResourceFilter.class)
   public Response markSegmentAsUsed(
       @PathParam("dataSourceName") String dataSourceName,
-      @PathParam("segmentId") String segmentId
+      @PathParam("segmentId") String serializedSegmentId
   )
   {
+    final SegmentId segmentId = SegmentId.tryParse(dataSourceName, serializedSegmentId);
+    if (segmentId == null) {
+      return Response.status(Response.Status.BAD_REQUEST).entity(
+          StringUtils.format(
+              "Could not parse Segment ID[%s] for DataSource[%s]",
+              StringUtils.escapeHtml(serializedSegmentId),
+              StringUtils.escapeHtml(dataSourceName)
+          )
+      ).build();
+    }
+
     SegmentUpdateOperation operation =
-        () -> segmentsMetadataManager.markSegmentAsUsed(segmentId) ? 1 : 0;
+        () -> metadataStorageCoordinator.markSegmentAsUsed(segmentId) ? 1 : 0;
     return performSegmentUpdate(dataSourceName, operation);
   }
 
   @DELETE
   @Path("/{dataSourceName}/segments/{segmentId}")
+  @Produces(MediaType.APPLICATION_JSON)
   @ResourceFilters(DatasourceResourceFilter.class)
   public Response markSegmentAsUnused(
       @PathParam("dataSourceName") String dataSourceName,
-      @PathParam("segmentId") String segmentIdString
+      @PathParam("segmentId") String serializedSegmentId
   )
   {
-    final SegmentId segmentId = SegmentId.tryParse(dataSourceName, segmentIdString);
+    final SegmentId segmentId = SegmentId.tryParse(dataSourceName, serializedSegmentId);
     if (segmentId == null) {
       return Response.status(Response.Status.BAD_REQUEST).entity(
-          StringUtils.format("Could not parse Segment ID[%s] for DataSource[%s]", segmentIdString, dataSourceName)
+          StringUtils.format(
+              "Could not parse Segment ID[%s] for DataSource[%s]",
+              StringUtils.escapeHtml(serializedSegmentId),
+              StringUtils.escapeHtml(dataSourceName)
+          )
       ).build();
     }
 

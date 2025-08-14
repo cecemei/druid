@@ -19,6 +19,8 @@
 
 package org.apache.druid.quidem;
 
+import com.google.common.base.Strings;
+import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
 import com.google.common.io.Files;
 import net.hydromatic.quidem.CommandHandler;
@@ -29,7 +31,6 @@ import org.apache.calcite.test.DiffTestCase;
 import org.apache.calcite.util.Closer;
 import org.apache.calcite.util.Util;
 import org.apache.commons.io.filefilter.TrueFileFilter;
-import org.apache.commons.io.filefilter.WildcardFileFilter;
 import org.apache.druid.concurrent.Threads;
 import org.apache.druid.error.DruidException;
 import org.apache.druid.java.util.common.FileUtils;
@@ -46,19 +47,23 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
 
 import java.io.File;
-import java.io.FileFilter;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.Reader;
 import java.io.Writer;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.FileSystem;
+import java.nio.file.FileSystems;
 import java.nio.file.Path;
+import java.nio.file.PathMatcher;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.function.Function;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import static org.junit.jupiter.api.Assertions.fail;
 
@@ -98,7 +103,13 @@ public abstract class DruidQuidemTestBase
 
   private static final String PROPERTY_FILTER = "quidem.filter";
 
-  private FileFilter filter = TrueFileFilter.INSTANCE;
+  /**
+   * This property enables the test system to split up huge cases into desired
+   * number of smaller testcases.
+   */
+  private static final String PROPERTY_SPLIT = "quidem.split";
+
+  private final PathMatcher filterMatcher;
 
   private DruidQuidemRunner druidQuidemRunner;
 
@@ -109,14 +120,93 @@ public abstract class DruidQuidemTestBase
 
   public DruidQuidemTestBase(DruidQuidemRunner druidQuidemRunner)
   {
-    String filterStr = System.getProperty(PROPERTY_FILTER, null);
-    if (filterStr != null) {
-      if (!filterStr.endsWith("*") && !filterStr.endsWith(IQ_SUFFIX)) {
-        filterStr = filterStr + IQ_SUFFIX;
-      }
-      filter = new WildcardFileFilter(filterStr);
-    }
+    String filterStr = Strings.emptyToNull(System.getProperty(PROPERTY_FILTER, null));
+    String splitStr = Strings.emptyToNull(System.getProperty(PROPERTY_SPLIT, null));
+    this.filterMatcher = buildFilterMatcher(filterStr, splitStr);
     this.druidQuidemRunner = druidQuidemRunner;
+  }
+
+  private PathMatcher buildFilterMatcher(String filterStr, String splitStr)
+  {
+    if (filterStr != null && splitStr != null) {
+      throw new IAE(
+          "Cannot configure multiple filter methods with properties: %s and %s.", PROPERTY_FILTER, PROPERTY_SPLIT
+      );
+    }
+    if (filterStr != null) {
+      return new IQPathMatcher(filterStr);
+    }
+    if (splitStr != null) {
+      return new QuidemSplitPathMatcher(splitStr);
+    }
+    return TrueFileFilter.INSTANCE;
+  }
+
+  static class QuidemSplitPathMatcher implements PathMatcher
+  {
+    private final int splitIndex;
+    private final int splitCount;
+
+    public QuidemSplitPathMatcher(String splitStr)
+    {
+      Pattern pattern = Pattern.compile("^([0-9]+)/([0-9]+)$");
+      Matcher m = pattern.matcher(splitStr);
+      if (!m.matches()) {
+        throw DruidException.defensive("Invalid split pattern; must match pattern [%s]", pattern);
+      }
+      splitIndex = Integer.parseInt(m.group(1));
+      splitCount = Integer.parseInt(m.group(2));
+      if (splitCount < 1 || splitIndex < 0 || splitIndex >= splitCount) {
+        throw DruidException.defensive("invalid splitStr [%s]", splitStr);
+      }
+    }
+
+    @Override
+    public boolean matches(Path path)
+    {
+      return Math.floorMod(path.toString().hashCode(), splitCount) == splitIndex;
+    }
+
+    @Override
+    public String toString()
+    {
+      return "split:" + splitIndex + "/" + splitCount;
+    }
+  }
+
+  static class IQPathMatcher implements PathMatcher
+  {
+    private final List<PathMatcher> filterMatchers = new ArrayList<>();
+    private final String filterStr;
+
+    public IQPathMatcher(String filterStr)
+    {
+      this.filterStr = filterStr;
+      final FileSystem fileSystem = FileSystems.getDefault();
+      for (String filterGlob : filterStr.split(",")) {
+        if (!filterGlob.endsWith("*") && !filterGlob.endsWith(IQ_SUFFIX)) {
+          filterGlob = filterStr + IQ_SUFFIX;
+        }
+        filterMatchers.add(fileSystem.getPathMatcher("glob:" + filterGlob));
+      }
+    }
+
+    @Override
+    public boolean matches(Path path)
+    {
+      for (PathMatcher m : filterMatchers) {
+        if (m.matches(path)) {
+          return true;
+        }
+      }
+      return false;
+    }
+
+    @Override
+    public String toString()
+    {
+      return filterStr;
+    }
   }
 
   protected static class QuidemTestCaseConfiguration
@@ -190,7 +280,8 @@ public abstract class DruidQuidemTestBase
   {
     Set<Class<MultiComponentSupplier>> metaSuppliers = new HashSet<>();
 
-    for (String line : Files.readLines(inFile, StandardCharsets.UTF_8)) {
+    List<String> lines = Files.readLines(inFile, StandardCharsets.UTF_8);
+    for (String line : lines) {
       if (line.startsWith("!use")) {
         String[] parts = line.split(" ");
         if (parts.length == 2) {
@@ -201,6 +292,15 @@ public abstract class DruidQuidemTestBase
           }
         }
       }
+    }
+    int nCommands = Iterables.size(Iterables.filter(lines, line -> line.startsWith("!")));
+    if (!commandLimitIgnoredFiles.contains(inFile.getName()) && nCommands > 80) {
+      throw DruidException.defensive(
+          "There are too many commands [%s] in file [%s] which would make working with the test harder. "
+          + "Please reduce the number of queries/commands/etc",
+          nCommands,
+          inFile
+      );
     }
     return metaSuppliers;
   }
@@ -268,10 +368,10 @@ public abstract class DruidQuidemTestBase
           connectionFactory.onSet("componentSupplier", componentSupplier);
         }
         ConfigBuilder configBuilder = Quidem.configBuilder()
-            .withConnectionFactory(connectionFactory)
-            .withPropertyHandler(connectionFactory)
-            .withEnv(connectionFactory::envLookup)
-            .withCommandHandler(commandHandler);
+                                            .withConnectionFactory(connectionFactory)
+                                            .withPropertyHandler(connectionFactory)
+                                            .withEnv(connectionFactory::envLookup)
+                                            .withCommandHandler(commandHandler);
 
         Config config = configBuilder
             .withReader(reader)
@@ -333,27 +433,28 @@ public abstract class DruidQuidemTestBase
     }
 
     for (File f : Files.fileTraverser().breadthFirst(testRoot)) {
-      if (isTestIncluded(f)) {
+      if (isTestIncluded(testRoot, f)) {
         Path relativePath = testRoot.toPath().relativize(f.toPath());
         ret.add(relativePath.toString());
       }
     }
     if (ret.isEmpty()) {
       throw new IAE(
-          "There are no test cases in directory [%s] or there are no matches to filter [%s]",
+          "There are no test cases in directory[%s] or there are no matches to filter[%s]",
           testRoot,
-          filter
+          filterMatcher
       );
     }
     Collections.sort(ret);
     return ret;
   }
 
-  private boolean isTestIncluded(File f)
+  private boolean isTestIncluded(File testRoot, File f)
   {
+    Path relativePath = testRoot.toPath().relativize(f.toPath());
     return !f.isDirectory()
            && f.getName().endsWith(IQ_SUFFIX)
-           && filter.accept(f);
+           && filterMatcher.matches(relativePath);
   }
 
   protected abstract File getTestRoot();
@@ -363,4 +464,67 @@ public abstract class DruidQuidemTestBase
   {
     DruidAvaticaTestDriver.CONFIG_STORE.close();
   }
+
+  /**
+   * This list should eventually be removed; as soon as all tests become smaller than 80.
+   */
+  Set<String> commandLimitIgnoredFiles = ImmutableSet.of(
+      "qaSQL_scalar_string.iq",
+      "qaSQL_scalar_numeric.iq",
+      "qaAggFuncs_array_agg_timestamp.iq",
+      "qaAggFuncs_array_agg_double.iq",
+      "qaAggFuncs_array_agg_float.iq",
+      "qaAggFuncs_array_agg_long.iq",
+      "qaAggFuncs_array_agg_string.iq",
+      "qaWin_sql.iq",
+      "qaAggFuncs_string_agg_timestamp.iq",
+      "qaAggFuncs_string_agg_double.iq",
+      "qaAggFuncs_string_agg_float.iq",
+      "qaAggFuncs_string_agg_long.iq",
+      "qaAggFuncs_string_agg_string.iq",
+      "qaUnnest_array_sql_scalar_funcs.iq",
+      "qaUnnest_mv_sql_scalar_funcs.iq",
+      "qaUnnest_mv_sql_other_funcs.iq",
+      "qaUnnest_mv_sql.iq",
+      "qaWin_orderby_range_negative_first_last.iq",
+      "qaWin_orderby_range_negative_sum_count.iq",
+      "qaWin_orderby_rows_negative_first_last.iq",
+      "qaWin_orderby_rows_negative_sum_count.iq",
+      "qaWin_basics.iq",
+      "qaWin_orderby_range_0_following_first_last.iq",
+      "qaWin_orderby_range_0_following_sum_count.iq",
+      "qaWin_orderby_range_0_preceding_first_last.iq",
+      "qaWin_orderby_range_0_preceding_sum_count.iq",
+      "qaWin_orderby_range_1_following_first_last.iq",
+      "qaWin_orderby_range_1_following_sum_count.iq",
+      "qaWin_orderby_range_1_preceding_first_last.iq",
+      "qaWin_orderby_range_1_preceding_sum_count.iq",
+      "qaWin_orderby_range_current_first_last.iq",
+      "qaWin_orderby_range_current_sum_count.iq",
+      "qaWin_orderby_range_ub_following_first_last.iq",
+      "qaWin_orderby_range_ub_following_sum_count.iq",
+      "qaWin_orderby_range_ub_preceding_first_last.iq",
+      "qaWin_orderby_range_ub_preceding_sum_count.iq",
+      "qaWin_orderby_rows_0_following_first_last.iq",
+      "qaWin_orderby_rows_0_following_sum_count.iq",
+      "qaWin_orderby_rows_0_preceding_first_last.iq",
+      "qaWin_orderby_rows_0_preceding_sum_count.iq",
+      "qaWin_orderby_rows_1_following_first_last.iq",
+      "qaWin_orderby_rows_1_following_sum_count.iq",
+      "qaWin_orderby_rows_1_preceding_first_last.iq",
+      "qaWin_orderby_rows_1_preceding_sum_count.iq",
+      "qaWin_orderby_rows_current_first_last.iq",
+      "qaWin_orderby_rows_current_sum_count.iq",
+      "qaWin_orderby_rows_ub_following_first_last.iq",
+      "qaWin_orderby_rows_ub_following_sum_count.iq",
+      "qaWin_orderby_rows_ub_preceding_first_last.iq",
+      "qaWin_orderby_rows_ub_preceding_sum_count.iq",
+      "qaUnnest_array_sql_other_funcs.iq",
+      "qaJsonCols_funcs_and_sql.iq",
+      "qaUnnest_array_sql.iq",
+      "qaUnnest_array_sql_filter.iq",
+      "qaUnnest_mv_sql_filter.iq",
+      "qaArray_sql.iq",
+      "qaArray_ops_funcs.iq"
+  );
 }

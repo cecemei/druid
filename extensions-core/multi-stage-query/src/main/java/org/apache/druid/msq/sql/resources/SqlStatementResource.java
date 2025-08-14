@@ -26,6 +26,7 @@ import com.google.common.collect.ImmutableMap;
 import com.google.common.io.CountingOutputStream;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.inject.Inject;
+import com.sun.jersey.api.core.HttpContext;
 import org.apache.druid.client.indexing.TaskPayloadResponse;
 import org.apache.druid.client.indexing.TaskStatusResponse;
 import org.apache.druid.common.guava.FutureUtils;
@@ -67,6 +68,7 @@ import org.apache.druid.msq.sql.entity.ResultSetInformation;
 import org.apache.druid.msq.sql.entity.SqlStatementResult;
 import org.apache.druid.msq.util.MultiStageQueryContext;
 import org.apache.druid.msq.util.SqlStatementResourceHelper;
+import org.apache.druid.query.DefaultQueryConfig;
 import org.apache.druid.query.ExecutionMode;
 import org.apache.druid.query.QueryContext;
 import org.apache.druid.query.QueryContexts;
@@ -84,6 +86,7 @@ import org.apache.druid.server.security.Resource;
 import org.apache.druid.server.security.ResourceAction;
 import org.apache.druid.sql.DirectStatement;
 import org.apache.druid.sql.HttpStatement;
+import org.apache.druid.sql.SqlQueryPlus;
 import org.apache.druid.sql.SqlRowTransformer;
 import org.apache.druid.sql.SqlStatementFactory;
 import org.apache.druid.sql.http.ResultFormat;
@@ -96,7 +99,6 @@ import org.jboss.netty.handler.codec.http.HttpResponseStatus;
 
 import javax.servlet.http.HttpServletRequest;
 import javax.validation.constraints.NotNull;
-import javax.ws.rs.Consumes;
 import javax.ws.rs.DELETE;
 import javax.ws.rs.GET;
 import javax.ws.rs.POST;
@@ -112,7 +114,6 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
-import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.regex.Pattern;
@@ -132,7 +133,7 @@ public class SqlStatementResource
   private final OverlordClient overlordClient;
   private final StorageConnector storageConnector;
   private final AuthorizerMapper authorizerMapper;
-
+  private final DefaultQueryConfig defaultQueryConfig;
 
   @Inject
   public SqlStatementResource(
@@ -140,7 +141,8 @@ public class SqlStatementResource
       final ObjectMapper jsonMapper,
       final OverlordClient overlordClient,
       final @MultiStageQuery StorageConnectorProvider storageConnectorProvider,
-      final AuthorizerMapper authorizerMapper
+      final AuthorizerMapper authorizerMapper,
+      final DefaultQueryConfig defaultQueryConfig
   )
   {
     this.msqSqlStatementFactory = msqSqlStatementFactory;
@@ -148,6 +150,7 @@ public class SqlStatementResource
     this.overlordClient = overlordClient;
     this.storageConnector = storageConnectorProvider.createStorageConnector(null);
     this.authorizerMapper = authorizerMapper;
+    this.defaultQueryConfig = defaultQueryConfig;
   }
 
   /**
@@ -167,18 +170,44 @@ public class SqlStatementResource
 
   @POST
   @Produces(MediaType.APPLICATION_JSON)
-  @Consumes(MediaType.APPLICATION_JSON)
-  public Response doPost(final SqlQuery sqlQuery, @Context final HttpServletRequest req)
+  public Response doPost(@Context final HttpServletRequest req,
+                         @Context final HttpContext httpContext)
   {
-    SqlQuery modifiedQuery = createModifiedSqlQuery(sqlQuery);
+    return doPost(SqlQuery.from(httpContext), req);
+  }
 
-    final HttpStatement stmt = msqSqlStatementFactory.httpStatement(modifiedQuery, req);
+  @VisibleForTesting
+  Response doPost(
+      final SqlQuery sqlQuery,
+      final HttpServletRequest req
+  )
+  {
+    final SqlQueryPlus sqlQueryPlus;
+    final HttpStatement stmt;
+
+    try {
+      if (sqlQuery.getContext().containsKey(RESULT_FORMAT)) {
+        throw InvalidInput.exception("Query context parameter [%s] is not allowed", RESULT_FORMAT);
+      }
+      sqlQueryPlus = SqlResource.makeSqlQueryPlus(
+          sqlQuery,
+          req,
+          ImmutableMap.<String, Object>builder()
+                      .putAll(defaultQueryConfig.getContext())
+                      .put(RESULT_FORMAT, sqlQuery.getResultFormat())
+                      .build()
+      );
+      stmt = msqSqlStatementFactory.httpStatement(sqlQueryPlus, req);
+    }
+    catch (Exception e) {
+      return SqlResource.handleExceptionBeforeStatementCreated(e, sqlQuery.queryContext());
+    }
+
     final String sqlQueryId = stmt.sqlQueryId();
     final String currThreadName = Thread.currentThread().getName();
-    boolean isDebug = false;
+    final QueryContext queryContext = QueryContext.of(sqlQueryPlus.context());
+    final boolean isDebug = queryContext.isDebug();
     try {
-      QueryContext queryContext = QueryContext.of(modifiedQuery.getContext());
-      isDebug = queryContext.isDebug();
       contextChecks(queryContext);
 
       Thread.currentThread().setName(StringUtils.format("statement_sql[%s]", sqlQueryId));
@@ -195,7 +224,7 @@ public class SqlStatementResource
         return buildTaskResponse(sequence, stmt.query().authResult());
       } else {
         // Used for EXPLAIN
-        return buildStandardResponse(sequence, modifiedQuery, sqlQueryId, rowTransformer);
+        return buildStandardResponse(sequence, sqlQuery, sqlQueryId, rowTransformer);
       }
     }
     catch (DruidException e) {
@@ -698,30 +727,6 @@ public class SqlStatementResource
     }
 
     return msqControllerTask;
-  }
-
-  /**
-   * Creates a new sqlQuery from the user submitted sqlQuery after performing required modifications.
-   */
-  private SqlQuery createModifiedSqlQuery(SqlQuery sqlQuery)
-  {
-    Map<String, Object> context = sqlQuery.getContext();
-    if (context.containsKey(RESULT_FORMAT)) {
-      throw InvalidInput.exception("Query context parameter [%s] is not allowed", RESULT_FORMAT);
-    }
-    Map<String, Object> modifiedContext = ImmutableMap.<String, Object>builder()
-                                                      .putAll(context)
-                                                      .put(RESULT_FORMAT, sqlQuery.getResultFormat().toString())
-                                                      .build();
-    return new SqlQuery(
-        sqlQuery.getQuery(),
-        sqlQuery.getResultFormat(),
-        sqlQuery.includeHeader(),
-        sqlQuery.includeTypesHeader(),
-        sqlQuery.includeSqlTypesHeader(),
-        modifiedContext,
-        sqlQuery.getParameters()
-    );
   }
 
   private ResultFormat getPreferredResultFormat(String resultFormatParam, MSQSpec msqSpec)

@@ -27,6 +27,7 @@ import com.google.inject.Inject;
 import org.apache.calcite.avatica.Meta;
 import org.apache.calcite.rel.type.RelDataType;
 import org.apache.commons.lang3.RegExUtils;
+import org.apache.druid.guice.LazySingleton;
 import org.apache.druid.java.util.common.ISE;
 import org.apache.druid.msq.guice.MultiStageQuery;
 import org.apache.druid.msq.indexing.report.MSQResultsReport.ColumnAndType;
@@ -34,6 +35,7 @@ import org.apache.druid.msq.indexing.report.MSQTaskReport;
 import org.apache.druid.msq.indexing.report.MSQTaskReportPayload;
 import org.apache.druid.msq.test.MSQTestBase;
 import org.apache.druid.msq.test.MSQTestOverlordServiceClient;
+import org.apache.druid.query.DefaultQueryConfig;
 import org.apache.druid.segment.column.RowSignature;
 import org.apache.druid.server.security.AuthenticatorMapper;
 import org.apache.druid.sql.SqlStatementFactory;
@@ -48,6 +50,7 @@ import java.util.Map;
 import java.util.Map.Entry;
 import java.util.regex.Pattern;
 
+@LazySingleton
 public class MSQDruidMeta extends DruidMeta
 {
   protected final MSQTestOverlordServiceClient overlordClient;
@@ -57,6 +60,7 @@ public class MSQDruidMeta extends DruidMeta
   @Inject
   public MSQDruidMeta(
       final @MultiStageQuery SqlStatementFactory sqlStatementFactory,
+      final DefaultQueryConfig defaultQueryConfig,
       final AvaticaServerConfig config,
       final ErrorHandler errorHandler,
       final AuthenticatorMapper authMapper,
@@ -64,7 +68,7 @@ public class MSQDruidMeta extends DruidMeta
       final ObjectMapper objectMapper,
       final DruidHookDispatcher hookDispatcher)
   {
-    super(sqlStatementFactory, config, errorHandler, authMapper);
+    super(sqlStatementFactory, defaultQueryConfig, config, errorHandler, authMapper);
     this.overlordClient = overlordClient;
     this.objectMapper = objectMapper;
     this.hookDispatcher = hookDispatcher;
@@ -74,6 +78,7 @@ public class MSQDruidMeta extends DruidMeta
   protected ExecuteResult doFetch(AbstractDruidJdbcStatement druidStatement, int maxRows)
   {
     String taskId = extractTaskId(druidStatement);
+
 
     MSQTaskReportPayload payload = (MSQTaskReportPayload) overlordClient.getReportForTask(taskId)
         .get(MSQTaskReport.REPORT_KEY)
@@ -109,6 +114,7 @@ public class MSQDruidMeta extends DruidMeta
     Signature signature = makeSignature(druidStatement, payload.getResults().getSignature());
     @SuppressWarnings("unchecked")
     Frame firstFrame = Frame.create(0, true, (List<Object>) resultRows);
+    overlordClient.closeTask(taskId);
     return new ExecuteResult(
         ImmutableList.of(
             MetaResultSet.create(
