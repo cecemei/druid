@@ -28,10 +28,10 @@ import org.apache.druid.segment.data.BitmapSerdeFactory;
 import org.apache.druid.segment.data.CompressedVariableSizedBlobColumnSupplier;
 import org.apache.druid.segment.data.FixedIndexed;
 import org.apache.druid.segment.data.FrontCodedIntArrayIndexed;
-import org.apache.druid.segment.data.GenericIndexed;
 import org.apache.druid.segment.data.Indexed;
 import org.apache.druid.segment.serde.ColumnSerializerUtils;
 
+import javax.annotation.Nullable;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.List;
@@ -45,16 +45,16 @@ import java.util.List;
  * specializes physical format based on the types of data encountered during processing, and so versions are now
  * {@link NestedCommonFormatColumnSerializer#V0} for all associated specializations.
  */
-public class NestedDataColumnV5<TStringDictionary extends Indexed<ByteBuffer>>
-    extends CompressedNestedDataComplexColumn<TStringDictionary>
+public class NestedDataColumnV5<TKeyDictionary extends Indexed<ByteBuffer>, TStringDictionary extends Indexed<ByteBuffer>>
+    extends CompressedNestedDataComplexColumn<TKeyDictionary, TStringDictionary>
 {
   public NestedDataColumnV5(
       String columnName,
       ColumnType logicalType,
       ColumnConfig columnConfig,
-      CompressedVariableSizedBlobColumnSupplier compressedRawColumnSupplier,
+      @Nullable CompressedVariableSizedBlobColumnSupplier compressedRawColumnSupplier,
       ImmutableBitmap nullValues,
-      GenericIndexed<String> fields,
+      Supplier<TKeyDictionary> fields,
       FieldTypeInfo fieldInfo,
       Supplier<TStringDictionary> stringDictionary,
       Supplier<FixedIndexed<Long>> longDictionarySupplier,
