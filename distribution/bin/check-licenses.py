@@ -264,6 +264,7 @@ def build_compatible_license_names():
     compatible_licenses['BSD-3-Clause'] = 'BSD-3-Clause License'
 
     compatible_licenses['Unicode/ICU License'] = 'Unicode/ICU License'
+    compatible_licenses['Unicode-3.0'] = 'Unicode/ICU License'
 
     compatible_licenses['SIL Open Font License 1.1'] = 'SIL Open Font License 1.1'
 
@@ -288,6 +289,7 @@ def build_compatible_license_names():
     compatible_licenses['Eclipse Public License, Version 2.0'] = 'Eclipse Public License 2.0'
     compatible_licenses['Eclipse Public License v2.0'] = 'Eclipse Public License 2.0'
     compatible_licenses['EPL 2.0'] = 'Eclipse Public License 2.0'
+    compatible_licenses['EPL-2.0'] = 'Eclipse Public License 2.0'
 
     compatible_licenses['Eclipse Distribution License 1.0'] = 'Eclipse Distribution License 1.0'
     compatible_licenses['Eclipse Distribution License - v 1.0'] = 'Eclipse Distribution License 1.0'
@@ -443,6 +445,8 @@ def check_licenses(license_yaml, dependency_reports_root):
     print_log_to_stderr("")
 
     if len(mismatched_licenses) > 0 or len(missing_licenses) > 0:
+        print_log_to_stderr("Mismatched licenses: {}".format(mismatched_licenses))
+        print_log_to_stderr("Missing licenses: {}".format(missing_licenses))
         sys.exit(1)
 
 

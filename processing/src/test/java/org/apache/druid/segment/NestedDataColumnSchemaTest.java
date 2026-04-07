@@ -23,6 +23,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.InjectableValues;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.apache.druid.jackson.DefaultObjectMapper;
+import org.apache.druid.segment.column.BitmapIndexType;
 import org.apache.druid.segment.column.StringEncodingStrategy;
 import org.apache.druid.segment.data.CompressionStrategy;
 import org.apache.druid.segment.data.FrontCodedIndexed;
@@ -32,19 +33,22 @@ import org.junit.Test;
 
 public class NestedDataColumnSchemaTest
 {
-  private static final DefaultColumnFormatConfig DEFAULT_CONFIG = new DefaultColumnFormatConfig(null, null, null);
+  private static final DefaultColumnFormatConfig DEFAULT_CONFIG = new DefaultColumnFormatConfig(null, null, null, null);
   private static final NestedCommonFormatColumnFormatSpec DEFAULT_NESTED_SPEC =
       NestedCommonFormatColumnFormatSpec.builder()
                                         .setObjectFieldsDictionaryEncoding(
                                             new StringEncodingStrategy.FrontCoded(8, FrontCodedIndexed.V1)
                                         )
                                         .setObjectStorageCompression(CompressionStrategy.ZSTD)
+                                        .setLongFieldBitmapIndexType(BitmapIndexType.NullValueIndex.INSTANCE)
+                                        .setDoubleFieldBitmapIndexType(BitmapIndexType.NullValueIndex.INSTANCE)
                                         .build();
 
   private static final DefaultColumnFormatConfig DEFAULT_NESTED_SPEC_CONFIG = new DefaultColumnFormatConfig(
       null,
       null,
-      IndexSpec.builder().withAutoColumnFormatSpec(DEFAULT_NESTED_SPEC).build()
+      IndexSpec.builder().withAutoColumnFormatSpec(DEFAULT_NESTED_SPEC).build(),
+      null
   );
 
   private static final ObjectMapper MAPPER;

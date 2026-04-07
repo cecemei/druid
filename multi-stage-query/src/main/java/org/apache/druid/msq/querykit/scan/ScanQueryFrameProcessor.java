@@ -19,7 +19,9 @@
 
 package org.apache.druid.msq.querykit.scan;
 
+import com.fasterxml.jackson.databind.JavaType;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.type.TypeFactory;
 import com.google.common.base.Throwables;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Iterables;
@@ -29,7 +31,6 @@ import org.apache.druid.collections.ResourceHolder;
 import org.apache.druid.common.guava.FutureUtils;
 import org.apache.druid.error.DruidException;
 import org.apache.druid.frame.Frame;
-import org.apache.druid.frame.channel.FrameWithPartition;
 import org.apache.druid.frame.channel.ReadableFrameChannel;
 import org.apache.druid.frame.channel.WritableFrameChannel;
 import org.apache.druid.frame.processor.FrameProcessor;
@@ -54,13 +55,12 @@ import org.apache.druid.java.util.common.io.Closer;
 import org.apache.druid.java.util.common.logger.Logger;
 import org.apache.druid.msq.exec.DataServerQueryHandler;
 import org.apache.druid.msq.exec.DataServerQueryResult;
-import org.apache.druid.msq.input.ParseExceptionUtils;
-import org.apache.druid.msq.input.ReadableInput;
-import org.apache.druid.msq.input.external.ExternalSegment;
-import org.apache.druid.msq.input.table.SegmentWithDescriptor;
+import org.apache.druid.msq.input.LoadableSegment;
 import org.apache.druid.msq.input.table.SegmentsInputSlice;
 import org.apache.druid.msq.querykit.BaseLeafFrameProcessor;
 import org.apache.druid.msq.querykit.QueryKitUtils;
+import org.apache.druid.msq.querykit.ReadableInput;
+import org.apache.druid.msq.querykit.SegmentReferenceHolder;
 import org.apache.druid.query.Druids;
 import org.apache.druid.query.IterableRowsCursorHelper;
 import org.apache.druid.query.Order;
@@ -70,7 +70,6 @@ import org.apache.druid.query.scan.ScanQueryEngine;
 import org.apache.druid.query.scan.ScanResultValue;
 import org.apache.druid.query.spec.SpecificSegmentSpec;
 import org.apache.druid.segment.ColumnSelectorFactory;
-import org.apache.druid.segment.CompleteSegment;
 import org.apache.druid.segment.Cursor;
 import org.apache.druid.segment.CursorFactory;
 import org.apache.druid.segment.CursorHolder;
@@ -101,6 +100,9 @@ import java.util.stream.Collectors;
  */
 public class ScanQueryFrameProcessor extends BaseLeafFrameProcessor
 {
+  public static final JavaType SCAN_RESULT_VALUE_TYPE =
+      TypeFactory.defaultInstance().constructType(ScanResultValue.class);
+
   private static final Logger log = new Logger(ScanQueryFrameProcessor.class);
   private static final int NO_LIMIT = -1;
 
@@ -118,7 +120,11 @@ public class ScanQueryFrameProcessor extends BaseLeafFrameProcessor
   private Cursor cursor;
   private ListenableFuture<DataServerQueryResult<Object[]>> dataServerQueryResultFuture;
   private Closeable cursorCloser;
-  private Segment segment;
+  /**
+   * Description for error messages, from {@link LoadableSegment#description()}.
+   */
+  @Nullable
+  private String descriptionForErrors;
   private final SimpleSettableOffset cursorOffset = new SimpleAscendingOffset(Integer.MAX_VALUE);
   private FrameWriter frameWriter;
   private long currentAllocatorCapacity; // Used for generating FrameRowTooLargeException if needed
@@ -228,6 +234,7 @@ public class ScanQueryFrameProcessor extends BaseLeafFrameProcessor
         dataServerQueryResultFuture =
             dataServerQueryHandler.fetchRowsFromDataServer(
                 preparedQuery,
+                ScanQueryFrameProcessor.SCAN_RESULT_VALUE_TYPE,
                 ScanQueryFrameProcessor::mappingFunction,
                 closer
             );
@@ -287,15 +294,13 @@ public class ScanQueryFrameProcessor extends BaseLeafFrameProcessor
   }
 
   @Override
-  protected ReturnOrAwait<Unit> runWithSegment(final SegmentWithDescriptor segment) throws IOException
+  protected ReturnOrAwait<Unit> runWithSegment(final SegmentReferenceHolder segmentHolder) throws IOException
   {
     if (cursor == null) {
-      final ResourceHolder<CompleteSegment> segmentHolder = closer.register(segment.getOrLoad());
-
-      final Segment mappedSegment = closer.register(mapSegment(segmentHolder.get().getSegment()).orElseThrow());
-      final CursorFactory cursorFactory = mappedSegment.as(CursorFactory.class);
+      final Segment segment = mapSegment(segmentHolder, closer);
+      final CursorFactory cursorFactory = segment.as(CursorFactory.class);
       if (cursorFactory == null) {
-        throw new ISE(
+        throw DruidException.defensive(
             "Null cursor factory found. Probably trying to issue a query against a segment being memory unmapped."
         );
       }
@@ -303,7 +308,7 @@ public class ScanQueryFrameProcessor extends BaseLeafFrameProcessor
       final CursorHolder nextCursorHolder =
           cursorFactory.makeCursorHolder(
               ScanQueryEngine.makeCursorBuildSpec(
-                  query.withQuerySegmentSpec(new SpecificSegmentSpec(segment.getDescriptor())),
+                  query.withQuerySegmentSpec(new SpecificSegmentSpec(segmentHolder.getDescriptor())),
                   null
               )
           );
@@ -332,7 +337,7 @@ public class ScanQueryFrameProcessor extends BaseLeafFrameProcessor
             nextCursor,
             nextCursorHolder.getOrdering(),
             nextCursorHolder,
-            segmentHolder.get().getSegment()
+            segmentHolder.description()
         );
         assert rowsFlushed == 0; // There's only ever one cursor when running with a segment
       }
@@ -359,10 +364,10 @@ public class ScanQueryFrameProcessor extends BaseLeafFrameProcessor
   {
     if (cursor == null || cursor.isDone()) {
       if (inputChannel.canRead()) {
-        final Frame frame = inputChannel.read();
+        final Frame frame = inputChannel.readFrame();
         final FrameSegment frameSegment = new FrameSegment(frame, inputFrameReader);
 
-        final Segment mappedSegment = mapSegment(frameSegment).orElseThrow();
+        final Segment mappedSegment = mapUnmanagedSegment(frameSegment);
         final CursorFactory cursorFactory = mappedSegment.as(CursorFactory.class);
         if (cursorFactory == null) {
           throw new ISE(
@@ -389,7 +394,7 @@ public class ScanQueryFrameProcessor extends BaseLeafFrameProcessor
             nextCursor,
             nextCursorHolder.getOrdering(),
             nextCursorHolder,
-            frameSegment
+            "frame"
         );
 
         if (rowsFlushed > 0) {
@@ -423,21 +428,20 @@ public class ScanQueryFrameProcessor extends BaseLeafFrameProcessor
     }
     catch (InvalidNullByteException inbe) {
       InvalidNullByteException.Builder builder = InvalidNullByteException.builder(inbe);
-      throw
-          builder.source(ParseExceptionUtils.generateReadableInputSourceNameFromMappedSegment(this.segment)) // frame segment
-                 .rowNumber(this.cursorOffset.getOffset() + 1)
-                 .build();
+      throw builder.source(descriptionForErrors)
+                   .rowNumber(this.cursorOffset.getOffset() + 1)
+                   .build();
     }
     catch (InvalidFieldException ffwe) {
       InvalidFieldException.Builder builder = InvalidFieldException.builder(ffwe);
-      throw
-          builder.source(ParseExceptionUtils.generateReadableInputSourceNameFromMappedSegment(this.segment)) // frame segment
-                 .rowNumber(this.cursorOffset.getOffset() + 1)
-                 .cause(ffwe.getCause())
-                 .build();
+      throw builder.source(descriptionForErrors)
+                   .rowNumber(this.cursorOffset.getOffset() + 1)
+                   .cause(ffwe.getCause())
+                   .build();
     }
     catch (Exception e) {
-      throw Throwables.propagate(e);
+      Throwables.throwIfUnchecked(e);
+      throw new RuntimeException(e);
     }
   }
 
@@ -482,7 +486,7 @@ public class ScanQueryFrameProcessor extends BaseLeafFrameProcessor
     if (frameWriter == null) {
       final FrameWriterFactory frameWriterFactory = getFrameWriterFactory();
       final ColumnSelectorFactory frameWriterColumnSelectorFactory =
-          wrapColumnSelectorFactoryIfNeeded(frameWriterVirtualColumns.wrap(cursor.getColumnSelectorFactory()));
+          frameWriterVirtualColumns.wrap(cursor.getColumnSelectorFactory());
       frameWriter = frameWriterFactory.newFrameWriter(frameWriterColumnSelectorFactory);
       currentAllocatorCapacity = frameWriterFactory.allocatorCapacity();
     }
@@ -492,7 +496,7 @@ public class ScanQueryFrameProcessor extends BaseLeafFrameProcessor
   {
     if (frameWriter != null && frameWriter.getNumRows() > 0) {
       final Frame frame = Frame.wrap(frameWriter.toByteArray());
-      Iterables.getOnlyElement(outputChannels()).write(new FrameWithPartition(frame, FrameWithPartition.NO_PARTITION));
+      Iterables.getOnlyElement(outputChannels()).write(frame);
       frameWriter.close();
       frameWriter = null;
       return frame.numRows();
@@ -510,7 +514,7 @@ public class ScanQueryFrameProcessor extends BaseLeafFrameProcessor
       final Cursor cursor,
       final List<OrderBy> ordering,
       @Nullable final Closeable cursorCloser,
-      final Segment segment
+      @Nullable final String descriptionForErrors
   ) throws IOException
   {
     final long rowsFlushed = flushFrameWriter();
@@ -521,7 +525,7 @@ public class ScanQueryFrameProcessor extends BaseLeafFrameProcessor
     }
     this.cursor = cursor;
     this.cursorCloser = cursorCloser;
-    this.segment = segment;
+    this.descriptionForErrors = descriptionForErrors;
     this.cursorOffset.reset();
     this.cursorRowsRead = 0;
 
@@ -534,22 +538,6 @@ public class ScanQueryFrameProcessor extends BaseLeafFrameProcessor
     }
 
     return rowsFlushed;
-  }
-
-  /**
-   * Wraps the column selector factory if the underlying input to the processor is an external source
-   */
-  private ColumnSelectorFactory wrapColumnSelectorFactoryIfNeeded(final ColumnSelectorFactory baseColumnSelectorFactory)
-  {
-    if (segment instanceof ExternalSegment) {
-      return new ExternalColumnSelectorFactory(
-          baseColumnSelectorFactory,
-          ((ExternalSegment) segment).externalInputSource(),
-          ((ExternalSegment) segment).signature(),
-          cursorOffset
-      );
-    }
-    return baseColumnSelectorFactory;
   }
 
   /**
